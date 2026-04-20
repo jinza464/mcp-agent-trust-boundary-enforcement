@@ -13,6 +13,7 @@ class TrustLabel(str, Enum):
     """Trust label assigned to an entity under evaluation."""
 
     TRUSTED = "trusted"
+    SEMI_TRUSTED = "semi_trusted"
     UNTRUSTED = "untrusted"
     UNKNOWN = "unknown"
     CONDITIONAL = "conditional"
