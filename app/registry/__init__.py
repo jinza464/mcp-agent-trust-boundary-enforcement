@@ -1,8 +1,9 @@
 """Registry package exports."""
 
-from app.registry.tool_identity_registry import (
-    RegistrationResult,
-    ToolIdentityRegistry,
+from app.registry.tool_registry import (
+    ChangeDetectionResult,
+    RegisterToolResult,
+    ToolRegistry,
 )
 
-__all__ = ["ToolIdentityRegistry", "RegistrationResult"]
+__all__ = ["ToolRegistry", "RegisterToolResult", "ChangeDetectionResult"]

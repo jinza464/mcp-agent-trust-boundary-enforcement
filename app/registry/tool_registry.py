@@ -36,7 +36,13 @@ class RegisterToolResult(BaseModel):
     status: str = Field(..., description="One of: registered_new, registered_duplicate, registered_update.")
     tool_name: str = Field(..., description="Tool name.")
     server_origin: str = Field(..., description="Server origin used for namespacing.")
+    is_new: bool = Field(..., description="Whether this is the first registration for this key.")
+    is_duplicate: bool = Field(..., description="Whether identity fields are unchanged from previous snapshot.")
     snapshot: ToolSnapshot = Field(..., description="Persisted snapshot after registration.")
+    previous_snapshot: ToolSnapshot | None = Field(
+        default=None,
+        description="Previous latest snapshot for this key when available.",
+    )
     change_result: ChangeDetectionResult | None = Field(
         default=None,
         description="Diff result against previous snapshot when available.",
@@ -119,7 +125,10 @@ class ToolRegistry:
                 status="registered_new",
                 tool_name=metadata.name,
                 server_origin=server_origin,
+                is_new=True,
+                is_duplicate=False,
                 snapshot=new_snapshot,
+                previous_snapshot=None,
                 change_result=None,
             )
 
@@ -130,7 +139,10 @@ class ToolRegistry:
             status="registered_update" if change_result.changed else "registered_duplicate",
             tool_name=metadata.name,
             server_origin=server_origin,
+            is_new=False,
+            is_duplicate=not change_result.changed,
             snapshot=new_snapshot,
+            previous_snapshot=old_snapshot,
             change_result=change_result,
         )
 
@@ -174,3 +186,12 @@ class ToolRegistry:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
+    @classmethod
+    def load_from_json(cls, file_path: str | Path) -> ToolRegistry:
+        """Load registry snapshots from a local JSON file."""
+        path = Path(file_path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        registry = cls()
+        for key, raw_snapshots in payload.get("snapshots_by_key", {}).items():
+            registry._snapshots_by_key[key] = [ToolSnapshot.model_validate(item) for item in raw_snapshots]
+        return registry

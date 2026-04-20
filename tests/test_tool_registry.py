@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from uuid import uuid4
+
 from app.core.models import CapabilityType, ToolMetadata
 from app.registry.tool_registry import ToolRegistry
 
@@ -35,6 +38,9 @@ def test_register_tool_first_registration() -> None:
     result = registry.register_tool(metadata)
 
     assert result.status == "registered_new"
+    assert result.is_new is True
+    assert result.is_duplicate is False
+    assert result.previous_snapshot is None
     assert result.change_result is None
     snapshot = registry.get_tool_snapshot("search", "https://server-a.mcp.local")
     assert snapshot is not None
@@ -48,6 +54,9 @@ def test_register_tool_duplicate_registration() -> None:
     result = registry.register_tool(metadata)
 
     assert result.status == "registered_duplicate"
+    assert result.is_new is False
+    assert result.is_duplicate is True
+    assert result.previous_snapshot is not None
     assert result.change_result is not None
     assert result.change_result.changed is False
     assert result.change_result.changed_fields == []
@@ -98,3 +107,22 @@ def test_same_name_different_origin() -> None:
     assert snapshot_b is not None
     assert snapshot_a.tool.tool_id == "tool.search.a"
     assert snapshot_b.tool.tool_id == "tool.search.b"
+
+
+def test_save_and_load_json_roundtrip() -> None:
+    registry = ToolRegistry()
+    metadata = _build_metadata()
+    registry.register_tool(metadata)
+
+    test_data_dir = Path("data") / "test_outputs"
+    test_data_dir.mkdir(parents=True, exist_ok=True)
+    file_path = test_data_dir / f"tool-registry-{uuid4().hex}.json"
+    try:
+        registry.save_to_json(file_path)
+        loaded = ToolRegistry.load_from_json(file_path)
+        snapshot = loaded.get_tool_snapshot("search", "https://server-a.mcp.local")
+        assert snapshot is not None
+        assert snapshot.tool.name == "search"
+    finally:
+        if file_path.exists():
+            file_path.unlink()
