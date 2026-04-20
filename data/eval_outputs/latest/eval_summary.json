@@ -1,17 +1,17 @@
 {
-  "total_cases": 5,
-  "matched_cases": 5,
+  "total_cases": 11,
+  "matched_cases": 11,
   "match_rate": 1.0,
   "risk_level_distribution": {
-    "high": 3,
-    "critical": 2
+    "high": 5,
+    "critical": 6
   },
   "decision_action_distribution": {
-    "require_confirmation": 3,
-    "deny": 2
+    "require_confirmation": 5,
+    "deny": 6
   },
   "sink_action_distribution": {
-    "none": 4,
-    "deny": 1
+    "none": 9,
+    "deny": 2
   }
 }

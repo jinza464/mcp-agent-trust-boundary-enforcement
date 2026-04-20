@@ -30,7 +30,7 @@ class EvalCaseResult(BaseModel):
 
 def run_case(case: EvalAttackCase) -> EvalCaseResult:
     """Execute one attack case through the minimal local security evaluation loop."""
-    source_trust = tag_source("user_query", case.user_query)
+    source_trust = tag_source(case.source_type, case.source_content, metadata=case.source_metadata)
     capability_result = classify_capabilities(case.tool_metadata)
     metadata_result = validate_metadata(case.old_snapshot, case.tool_metadata) if case.old_snapshot else None
 
@@ -38,8 +38,9 @@ def run_case(case: EvalAttackCase) -> EvalCaseResult:
         DecisionContext(
             tool_metadata=case.tool_metadata,
             source_trust_label=source_trust,
-            source_type="user_query",
-            source_content=case.user_query,
+            source_type=case.source_type,
+            source_content=case.source_content,
+            source_metadata=case.source_metadata,
             capability_result=capability_result,
             metadata_validation_result=metadata_result,
             old_snapshot=case.old_snapshot,
