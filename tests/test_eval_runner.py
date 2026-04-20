@@ -15,6 +15,7 @@ def _case(case_id: str):
 def test_run_all_cases_executes_five_paths() -> None:
     results = run_all_cases()
     assert len(results) >= 5
+    assert all(result.attack_type for result in results)
     assert {result.case_id for result in results}.issuperset(
         {
             "case-metadata-injection",
@@ -28,6 +29,7 @@ def test_run_all_cases_executes_five_paths() -> None:
 
 def test_metadata_injection_path() -> None:
     result = run_case(_case("case-metadata-injection"))
+    assert result.attack_type == "metadata injection"
     assert result.detected_risk_level == RiskLevel.HIGH
     assert result.decision_action == DecisionAction.REQUIRE_CONFIRMATION
     assert result.matched_expectation is True
@@ -35,6 +37,7 @@ def test_metadata_injection_path() -> None:
 
 def test_tool_shadowing_path() -> None:
     result = run_case(_case("case-tool-shadowing"))
+    assert result.attack_type == "tool shadowing"
     assert result.detected_risk_level == RiskLevel.HIGH
     assert result.decision_action == DecisionAction.REQUIRE_CONFIRMATION
     assert result.matched_expectation is True
@@ -42,6 +45,7 @@ def test_tool_shadowing_path() -> None:
 
 def test_rug_pull_path() -> None:
     result = run_case(_case("case-rug-pull"))
+    assert result.attack_type == "rug pull"
     assert result.detected_risk_level == RiskLevel.HIGH
     assert result.decision_action == DecisionAction.REQUIRE_CONFIRMATION
     assert result.matched_expectation is True
@@ -49,6 +53,7 @@ def test_rug_pull_path() -> None:
 
 def test_source_to_sink_exfiltration_path() -> None:
     result = run_case(_case("case-source-to-sink-exfiltration"))
+    assert result.attack_type == "source-to-sink exfiltration"
     assert result.detected_risk_level == RiskLevel.CRITICAL
     assert result.decision_action == DecisionAction.DENY
     assert result.sink_action == DecisionAction.DENY
@@ -57,6 +62,7 @@ def test_source_to_sink_exfiltration_path() -> None:
 
 def test_hidden_invocation_path() -> None:
     result = run_case(_case("case-hidden-invocation"))
+    assert result.attack_type == "hidden invocation"
     assert result.detected_risk_level == RiskLevel.CRITICAL
     assert result.decision_action == DecisionAction.DENY
     assert result.matched_expectation is True

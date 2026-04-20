@@ -19,6 +19,7 @@ class EvalCaseResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     case_id: str = Field(..., description="Attack case id.")
+    attack_type: str = Field(..., description="Attack category of the evaluated case.")
     detected_risk_level: RiskLevel = Field(..., description="Detected risk level from decision engine.")
     decision_action: DecisionAction = Field(..., description="Decision action from decision engine.")
     sink_action: DecisionAction | None = Field(default=None, description="Sink guard action when sink is present.")
@@ -64,6 +65,7 @@ def run_case(case: EvalAttackCase) -> EvalCaseResult:
 
     return EvalCaseResult(
         case_id=case.id,
+        attack_type=case.attack_type,
         detected_risk_level=decision_result.risk_level,
         decision_action=decision_result.action,
         sink_action=sink_action,
