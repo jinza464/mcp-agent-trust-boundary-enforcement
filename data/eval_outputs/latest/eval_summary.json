@@ -1,0 +1,17 @@
+{
+  "total_cases": 5,
+  "matched_cases": 5,
+  "match_rate": 1.0,
+  "risk_level_distribution": {
+    "high": 3,
+    "critical": 2
+  },
+  "decision_action_distribution": {
+    "require_confirmation": 3,
+    "deny": 2
+  },
+  "sink_action_distribution": {
+    "none": 4,
+    "deny": 1
+  }
+}

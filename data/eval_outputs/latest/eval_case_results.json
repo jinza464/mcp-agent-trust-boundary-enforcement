@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "case-metadata-injection",
+    "attack_type": "metadata injection",
+    "detected_risk_level": "high",
+    "decision_action": "require_confirmation",
+    "sink_action": null,
+    "matched_expectation": true,
+    "reasons": [
+      "High-risk metadata change requires explicit user confirmation."
+    ],
+    "findings": [
+      "Detected read/list/query behavior from capability or text patterns.",
+      "Description hash changed from previous snapshot.",
+      "Prompt-like instruction detected in tool description.",
+      "Source trust label: trusted."
+    ]
+  },
+  {
+    "case_id": "case-tool-shadowing",
+    "attack_type": "tool shadowing",
+    "detected_risk_level": "high",
+    "decision_action": "require_confirmation",
+    "sink_action": null,
+    "matched_expectation": true,
+    "reasons": [
+      "High-risk metadata change requires explicit user confirmation."
+    ],
+    "findings": [
+      "Detected read/list/query behavior from capability or text patterns.",
+      "Shadowing risk: same tool name appears from a different server origin.",
+      "Source trust label: trusted."
+    ]
+  },
+  {
+    "case_id": "case-rug-pull",
+    "attack_type": "rug pull",
+    "detected_risk_level": "high",
+    "decision_action": "require_confirmation",
+    "sink_action": null,
+    "matched_expectation": true,
+    "reasons": [
+      "High-risk metadata change requires explicit user confirmation."
+    ],
+    "findings": [
+      "Detected read/list/query behavior from capability or text patterns.",
+      "Detected file write/modify semantics from capability or text patterns.",
+      "Detected state-changing behavior (create/update/delete/execute).",
+      "Description hash changed from previous snapshot.",
+      "Schema hash changed from previous snapshot.",
+      "New high-risk capabilities introduced: file_write.",
+      "Version rollback detected: 2.3.0 -> 1.0.0.",
+      "Source trust label: trusted."
+    ]
+  },
+  {
+    "case_id": "case-source-to-sink-exfiltration",
+    "attack_type": "source-to-sink exfiltration",
+    "detected_risk_level": "critical",
+    "decision_action": "deny",
+    "sink_action": "deny",
+    "matched_expectation": true,
+    "reasons": [
+      "Hard-block rule triggered by critical capability pattern."
+    ],
+    "findings": [
+      "Detected read/list/query behavior from capability or text patterns.",
+      "Detected secret-sensitive access keywords in description/schema hints.",
+      "Detected outbound network transmission patterns.",
+      "Read capability includes secret-oriented signals; treat as sensitive read path.",
+      "Source trust label: trusted.",
+      "Detected network send sink.",
+      "Sensitive secret/token/password content detected in outbound payload."
+    ]
+  },
+  {
+    "case_id": "case-hidden-invocation",
+    "attack_type": "hidden invocation",
+    "detected_risk_level": "critical",
+    "decision_action": "deny",
+    "sink_action": null,
+    "matched_expectation": true,
+    "reasons": [
+      "Hard-block rule triggered by critical capability pattern."
+    ],
+    "findings": [
+      "Detected state-changing behavior (create/update/delete/execute).",
+      "Detected hidden/background invocation risk patterns.",
+      "Source trust label: trusted."
+    ]
+  }
+]
