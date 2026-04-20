@@ -13,5 +13,10 @@
   "sink_action_distribution": {
     "none": 9,
     "deny": 2
-  }
+  },
+  "attack_success_rate": 0.0,
+  "leak_rate": 0.0,
+  "escalation_rate": 0.0,
+  "false_positive_rate": 0.0,
+  "utility_loss": 0.0
 }

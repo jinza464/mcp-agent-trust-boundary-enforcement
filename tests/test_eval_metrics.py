@@ -19,10 +19,16 @@ def _result(
     decision: DecisionAction,
     matched: bool,
     sink_action: DecisionAction | None = None,
+    is_attack: bool = True,
+    is_benign: bool = False,
+    involves_sink: bool = False,
 ) -> EvalCaseResult:
     return EvalCaseResult(
         case_id=case_id,
         attack_type=attack_type,
+        is_attack=is_attack,
+        is_benign=is_benign,
+        involves_sink=involves_sink,
         detected_risk_level=risk,
         decision_action=decision,
         sink_action=sink_action,
@@ -40,6 +46,11 @@ def test_summarize_results_empty() -> None:
     assert summary.risk_level_distribution == {}
     assert summary.decision_action_distribution == {}
     assert summary.sink_action_distribution == {}
+    assert summary.attack_success_rate == 0.0
+    assert summary.leak_rate == 0.0
+    assert summary.escalation_rate == 0.0
+    assert summary.false_positive_rate == 0.0
+    assert summary.utility_loss == 0.0
 
 
 def test_summarize_results_normal() -> None:
@@ -51,6 +62,9 @@ def test_summarize_results_normal() -> None:
             decision=DecisionAction.REQUIRE_CONFIRMATION,
             matched=True,
             sink_action=None,
+            is_attack=True,
+            is_benign=False,
+            involves_sink=False,
         ),
         _result(
             case_id="c2",
@@ -59,16 +73,57 @@ def test_summarize_results_normal() -> None:
             decision=DecisionAction.DENY,
             matched=False,
             sink_action=DecisionAction.DENY,
+            is_attack=True,
+            is_benign=False,
+            involves_sink=True,
+        ),
+        _result(
+            case_id="c3",
+            attack_type="exfiltration-lite",
+            risk=RiskLevel.HIGH,
+            decision=DecisionAction.ALLOW,
+            matched=False,
+            sink_action=DecisionAction.REQUIRE_CONFIRMATION,
+            is_attack=True,
+            is_benign=False,
+            involves_sink=True,
+        ),
+        _result(
+            case_id="c4",
+            attack_type="benign-safe",
+            risk=RiskLevel.LOW,
+            decision=DecisionAction.ALLOW,
+            matched=True,
+            sink_action=None,
+            is_attack=False,
+            is_benign=True,
+            involves_sink=False,
+        ),
+        _result(
+            case_id="c5",
+            attack_type="benign-safe",
+            risk=RiskLevel.MEDIUM,
+            decision=DecisionAction.REQUIRE_CONFIRMATION,
+            matched=False,
+            sink_action=None,
+            is_attack=False,
+            is_benign=True,
+            involves_sink=False,
         ),
     ]
 
     summary = summarize_results(results)
-    assert summary.total_cases == 2
-    assert summary.matched_cases == 1
-    assert summary.match_rate == 0.5
-    assert summary.risk_level_distribution == {"high": 1, "critical": 1}
-    assert summary.decision_action_distribution == {"require_confirmation": 1, "deny": 1}
-    assert summary.sink_action_distribution == {"none": 1, "deny": 1}
+    assert summary.total_cases == 5
+    assert summary.matched_cases == 2
+    assert summary.match_rate == 0.4
+    assert summary.risk_level_distribution == {"high": 2, "critical": 1, "low": 1, "medium": 1}
+    assert summary.decision_action_distribution == {"require_confirmation": 2, "deny": 1, "allow": 2}
+    assert summary.sink_action_distribution == {"none": 3, "deny": 1, "require_confirmation": 1}
+    assert summary.attack_success_rate == 0.0
+    assert summary.leak_rate == 0.5
+    assert summary.escalation_rate == 0.0
+    assert summary.false_positive_rate == 0.5
+    assert summary.utility_loss == 0.5
 
 
 def test_export_results_to_json() -> None:
@@ -80,6 +135,9 @@ def test_export_results_to_json() -> None:
             decision=DecisionAction.DENY,
             matched=True,
             sink_action=DecisionAction.DENY,
+            is_attack=True,
+            is_benign=False,
+            involves_sink=True,
         )
     ]
     out_dir = Path("data") / "test_outputs" / f"eval-metrics-{uuid4().hex}"

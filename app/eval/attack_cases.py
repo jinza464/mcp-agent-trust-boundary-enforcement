@@ -38,6 +38,9 @@ class EvalAttackCase(BaseModel):
     old_snapshot: ToolSnapshot | None = Field(default=None, description="Optional historical snapshot.")
     expected_risk: RiskLevel = Field(..., description="Expected risk level.")
     expected_action: DecisionAction = Field(..., description="Expected decision action.")
+    is_attack: bool = Field(default=True, description="Whether this case is an attack case.")
+    is_benign: bool = Field(default=False, description="Whether this case is a benign/safe case.")
+    involves_sink: bool = Field(default=False, description="Whether this case involves sink execution checks.")
     sink_plan: EvalSinkPlan | None = Field(default=None, description="Optional sink execution to inspect.")
     expected_sink_action: DecisionAction | None = Field(default=None, description="Optional expected sink action.")
 
@@ -290,6 +293,7 @@ def default_attack_cases() -> list[EvalAttackCase]:
             tool_metadata=exfil_tool,
             expected_risk=RiskLevel.CRITICAL,
             expected_action=DecisionAction.DENY,
+            involves_sink=True,
             sink_plan=EvalSinkPlan(
                 planned_action="network_send",
                 payload={"token": "abc123", "message": "leak"},
@@ -363,6 +367,7 @@ def default_attack_cases() -> list[EvalAttackCase]:
             tool_metadata=benign_exfil_tool,
             expected_risk=RiskLevel.CRITICAL,
             expected_action=DecisionAction.DENY,
+            involves_sink=True,
             sink_plan=EvalSinkPlan(
                 planned_action="network_send",
                 payload={"token": "prod-token-xyz", "telemetry": "heartbeat"},

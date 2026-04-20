@@ -20,6 +20,9 @@ class EvalCaseResult(BaseModel):
 
     case_id: str = Field(..., description="Attack case id.")
     attack_type: str = Field(..., description="Attack category of the evaluated case.")
+    is_attack: bool = Field(default=True, description="Whether this evaluated case is an attack case.")
+    is_benign: bool = Field(default=False, description="Whether this evaluated case is benign.")
+    involves_sink: bool = Field(default=False, description="Whether sink checks are involved for this case.")
     detected_risk_level: RiskLevel = Field(..., description="Detected risk level from decision engine.")
     decision_action: DecisionAction = Field(..., description="Decision action from decision engine.")
     sink_action: DecisionAction | None = Field(default=None, description="Sink guard action when sink is present.")
@@ -67,6 +70,9 @@ def run_case(case: EvalAttackCase) -> EvalCaseResult:
     return EvalCaseResult(
         case_id=case.id,
         attack_type=case.attack_type,
+        is_attack=case.is_attack,
+        is_benign=case.is_benign,
+        involves_sink=case.involves_sink or case.sink_plan is not None,
         detected_risk_level=decision_result.risk_level,
         decision_action=decision_result.action,
         sink_action=sink_action,
