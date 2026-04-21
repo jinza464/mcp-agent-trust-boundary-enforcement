@@ -147,16 +147,6 @@ def _recommendation_from_risk(risk: RiskLevel) -> RecommendationAction:
     return RecommendationAction.ALLOW
 
 
-def _action_rank(action: DecisionAction) -> int:
-    return {
-        DecisionAction.ALLOW: 1,
-        DecisionAction.SANDBOX: 2,
-        DecisionAction.REQUIRE_CONFIRMATION: 3,
-        DecisionAction.ESCALATE: 4,
-        DecisionAction.DENY: 5,
-    }[action]
-
-
 def _default_metadata_validation() -> MetadataValidationResult:
     return MetadataValidationResult(
         passed=True,
@@ -248,7 +238,7 @@ def _policy_metadata(metadata_risk: RiskLevel) -> PolicyStageResult:
     elif metadata_risk == RiskLevel.MEDIUM:
         triggered = True
         proposed = DecisionAction.SANDBOX
-        reasons.append("Medium metadata risk suggests sandboxing.")
+        reasons.append("Medium metadata risk suggests sandboxing (advisory in v2 baseline unless reinforced).")
 
     return PolicyStageResult(
         stage="metadata_policy",
@@ -299,7 +289,7 @@ def _policy_capability(capability_risk: RiskLevel) -> PolicyStageResult:
     elif capability_risk == RiskLevel.MEDIUM:
         triggered = True
         proposed = DecisionAction.SANDBOX
-        reasons.append("Medium capability risk suggests sandboxing.")
+        reasons.append("Medium capability risk suggests sandboxing (advisory in v2 baseline unless reinforced).")
 
     return PolicyStageResult(
         stage="capability_policy",
@@ -325,20 +315,29 @@ def _compose_action(stage_results: list[PolicyStageResult]) -> tuple[DecisionAct
 
     source_stage = stage_map["source_trust_policy"]
     capability_stage = stage_map["capability_policy"]
-
-    candidate_actions = [source_stage.proposed_action, capability_stage.proposed_action, metadata_stage.proposed_action]
-    action = max(candidate_actions, key=_action_rank)
-
     if source_stage.triggered:
-        reasons.extend(source_stage.reasons)
-    if capability_stage.triggered:
-        reasons.extend(capability_stage.reasons)
-    if metadata_stage.triggered:
-        reasons.extend(metadata_stage.reasons)
+        return DecisionAction.ESCALATE, source_stage.reasons
 
-    if not reasons:
-        reasons = ["No blocking risk signal detected under current policy rules."]
-    return action, reasons
+    if capability_stage.proposed_action == DecisionAction.REQUIRE_CONFIRMATION:
+        return DecisionAction.REQUIRE_CONFIRMATION, capability_stage.reasons
+
+    metadata_medium = metadata_stage.proposed_action == DecisionAction.SANDBOX
+    capability_medium = capability_stage.proposed_action == DecisionAction.SANDBOX
+    # v2 baseline tightening: SANDBOX is no longer the default medium-risk terminal action.
+    # It is reserved for reinforced medium-risk conditions to preserve comparability.
+    if metadata_medium and capability_medium and source_stage.risk_level == RiskLevel.LOW:
+        reasons.extend(metadata_stage.reasons)
+        reasons.extend(capability_stage.reasons)
+        reasons.append("Reinforced medium-risk signals from metadata and capability policies; sandbox enforced.")
+        return DecisionAction.SANDBOX, reasons
+
+    if metadata_medium or capability_medium:
+        reasons.extend(metadata_stage.reasons if metadata_medium else [])
+        reasons.extend(capability_stage.reasons if capability_medium else [])
+        reasons.append("Medium-risk signals recorded as advisory; no sandbox enforcement in v2 baseline.")
+        return DecisionAction.ALLOW, reasons
+
+    return DecisionAction.ALLOW, ["No blocking risk signal detected under current policy rules."]
 
 
 def decide(context: DecisionContext | dict) -> EngineDecisionResult:
@@ -441,4 +440,3 @@ def decide(context: DecisionContext | dict) -> EngineDecisionResult:
         requires_user_confirmation=requires_user_confirmation,
         decision_result=decision_result,
     )
-

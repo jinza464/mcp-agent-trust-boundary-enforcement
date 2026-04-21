@@ -1,28 +1,28 @@
 {
-  "total_cases": 25,
-  "matched_cases": 25,
-  "match_rate": 1.0,
+  "total_cases": 37,
+  "matched_cases": 27,
+  "match_rate": 0.7297297297297297,
   "risk_level_distribution": {
+    "critical": 9,
     "high": 10,
-    "critical": 7,
-    "low": 4,
-    "medium": 4
+    "medium": 13,
+    "low": 5
   },
   "decision_action_distribution": {
+    "deny": 9,
     "require_confirmation": 8,
-    "deny": 7,
-    "allow": 8,
+    "allow": 18,
     "escalate": 2
   },
   "sink_action_distribution": {
-    "none": 17,
-    "deny": 2,
-    "allow": 2,
-    "require_confirmation": 4
+    "none": 24,
+    "require_confirmation": 5,
+    "allow": 3,
+    "deny": 5
   },
-  "attack_success_rate": 0.10526315789473684,
-  "leak_rate": 0.75,
-  "escalation_rate": 0.08,
-  "false_positive_rate": 0.3333333333333333,
-  "utility_loss": 0.3333333333333333
+  "attack_success_rate": 0.11538461538461539,
+  "leak_rate": 0.23076923076923078,
+  "escalation_rate": 0.05405405405405406,
+  "false_positive_rate": 0.2727272727272727,
+  "utility_loss": 0.2727272727272727
 }

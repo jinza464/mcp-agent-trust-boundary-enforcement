@@ -110,8 +110,7 @@ def test_prompt_like_metadata_without_secret_or_network_signals() -> None:
         capabilities={CapabilityType.READ},
     )
     result = validate_metadata(old, new)
-    assert result.risk_level == RiskLevel.CRITICAL
-    assert result.recommended_action == DecisionAction.DENY
+    assert result.risk_level == RiskLevel.HIGH
+    assert result.recommended_action == DecisionAction.REQUIRE_CONFIRMATION
     assert any(item.finding_type == "metadata_only_prompt_injection" for item in result.structured_findings)
     assert DriftDomain.DESCRIPTIVE in result.drift_domains
-

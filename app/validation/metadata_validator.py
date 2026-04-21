@@ -186,6 +186,7 @@ def validate_metadata(old_snapshot: ToolSnapshot, new_metadata: ToolMetadata) ->
     """Validate metadata evolution with metadata-only and explainable risk rules."""
     structured_findings: list[MetadataValidationFinding] = []
     risk_levels: list[RiskLevel] = []
+    consumed_change_categories: set[str] = set()
 
     registry = ToolRegistry()
     diff = registry.detect_changes(old_snapshot, new_metadata)
@@ -200,6 +201,7 @@ def validate_metadata(old_snapshot: ToolSnapshot, new_metadata: ToolMetadata) ->
     new_provider = new_metadata.provider_identity or new_metadata.provider
 
     if "description_hash" in diff.changed_fields:
+        consumed_change_categories.add("descriptive_change")
         _append_finding(
             findings=structured_findings,
             drift_domain=DriftDomain.DESCRIPTIVE,
@@ -219,6 +221,7 @@ def validate_metadata(old_snapshot: ToolSnapshot, new_metadata: ToolMetadata) ->
     old_output_hash = old_snapshot.output_schema_hash or _fingerprint(old_snapshot.tool.output_schema)
     new_output_hash = _fingerprint(new_metadata.output_schema)
     if old_input_hash != new_input_hash or old_output_hash != new_output_hash or "schema_hash" in diff.changed_fields:
+        consumed_change_categories.add("schema_change")
         _append_finding(
             findings=structured_findings,
             drift_domain=DriftDomain.INTERFACE,
@@ -300,6 +303,7 @@ def validate_metadata(old_snapshot: ToolSnapshot, new_metadata: ToolMetadata) ->
         risk_levels.append(RiskLevel.HIGH)
 
     if old_origin != new_origin:
+        consumed_change_categories.add("server_relocation")
         _append_finding(
             findings=structured_findings,
             drift_domain=DriftDomain.ORIGIN,
@@ -311,20 +315,30 @@ def validate_metadata(old_snapshot: ToolSnapshot, new_metadata: ToolMetadata) ->
         risk_levels.append(RiskLevel.HIGH)
 
     if old_namespace != new_namespace or old_provider != new_provider:
+        consumed_change_categories.add("namespace_conflict")
+        strong_identity_confusion = (
+            old_origin != new_origin
+            and old_namespace != new_namespace
+            and old_provider != new_provider
+            and (old_snapshot.tool.tool_identity or old_snapshot.tool.tool_id)
+            == (new_metadata.tool_identity or new_metadata.tool_id)
+        )
+        severity = RiskLevel.CRITICAL if strong_identity_confusion else RiskLevel.HIGH
         _append_finding(
             findings=structured_findings,
             drift_domain=DriftDomain.ORIGIN,
             finding_type="namespace_confusion",
-            severity=RiskLevel.CRITICAL,
+            severity=severity,
             message="Namespace/provider identity changed and may indicate confusion risk.",
             evidence={
                 "old_namespace": old_namespace,
                 "new_namespace": new_namespace,
                 "old_provider_identity": old_provider,
                 "new_provider_identity": new_provider,
+                "strong_identity_confusion": strong_identity_confusion,
             },
         )
-        risk_levels.append(RiskLevel.CRITICAL)
+        risk_levels.append(severity)
 
     old_version = old_snapshot.tool.version
     new_version = new_metadata.version
@@ -333,6 +347,7 @@ def validate_metadata(old_snapshot: ToolSnapshot, new_metadata: ToolMetadata) ->
     capability_changed = set(old_snapshot.tool.capabilities) != set(new_metadata.capabilities)
     if old_semver and new_semver:
         if new_semver < old_semver:
+            consumed_change_categories.add("rollback")
             severity = RiskLevel.CRITICAL if not capability_changed else RiskLevel.HIGH
             message = (
                 f"Version rollback detected without explicit capability change: {old_version} -> {new_version}."
@@ -376,26 +391,38 @@ def validate_metadata(old_snapshot: ToolSnapshot, new_metadata: ToolMetadata) ->
         risk_levels.append(RiskLevel.MEDIUM)
 
     if _contains_prompt_like_instruction(new_metadata.description):
+        strong_compromise_context = (
+            old_origin != new_origin
+            or old_namespace != new_namespace
+            or old_provider != new_provider
+            or ("rollback" in diff.change_categories and not capability_changed)
+            or ("schema_change" in diff.change_categories and "server_relocation" in diff.change_categories)
+        )
+        severity = RiskLevel.CRITICAL if strong_compromise_context else RiskLevel.HIGH
         _append_finding(
             findings=structured_findings,
             drift_domain=DriftDomain.DESCRIPTIVE,
             finding_type="metadata_only_prompt_injection",
-            severity=RiskLevel.CRITICAL,
+            severity=severity,
             message="Prompt-like control instruction detected in tool metadata description.",
-            evidence={"description_excerpt": new_metadata.description[:200]},
+            evidence={
+                "description_excerpt": new_metadata.description[:200],
+                "strong_compromise_context": strong_compromise_context,
+            },
         )
-        risk_levels.append(RiskLevel.CRITICAL)
+        risk_levels.append(severity)
 
-    if diff.change_categories:
-        severity = diff.severity
+    unconsumed_categories = [item for item in diff.change_categories if item not in consumed_change_categories]
+    if unconsumed_categories:
+        severity = diff.severity if diff.severity in {RiskLevel.HIGH, RiskLevel.CRITICAL} else RiskLevel.MEDIUM
         _append_finding(
             findings=structured_findings,
-            drift_domain=_domain_from_change_categories(diff.change_categories),
+            drift_domain=_domain_from_change_categories(unconsumed_categories),
             finding_type="registry_detected_drift",
             severity=severity,
-            message=diff.drift_summary,
+            message="Registry reported additional drift categories not covered by direct metadata checks.",
             evidence={
-                "change_categories": diff.change_categories,
+                "change_categories": unconsumed_categories,
                 "old_values": diff.old_values,
                 "new_values": diff.new_values,
             },

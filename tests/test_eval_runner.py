@@ -32,6 +32,8 @@ def test_metadata_injection_path() -> None:
     assert result.attack_type == "metadata injection"
     assert result.detected_risk_level == RiskLevel.HIGH
     assert result.decision_action == DecisionAction.REQUIRE_CONFIRMATION
+    assert result.completed_execution is False
+    assert result.execution_degraded is True
     assert result.matched_expectation is True
 
 
@@ -40,6 +42,8 @@ def test_tool_shadowing_path() -> None:
     assert result.attack_type == "tool shadowing"
     assert result.detected_risk_level == RiskLevel.HIGH
     assert result.decision_action == DecisionAction.REQUIRE_CONFIRMATION
+    assert result.completed_execution is False
+    assert result.execution_degraded is True
     assert result.matched_expectation is True
 
 
@@ -48,6 +52,8 @@ def test_rug_pull_path() -> None:
     assert result.attack_type == "rug pull"
     assert result.detected_risk_level == RiskLevel.HIGH
     assert result.decision_action == DecisionAction.REQUIRE_CONFIRMATION
+    assert result.completed_execution is False
+    assert result.execution_degraded is True
     assert result.matched_expectation is True
 
 

@@ -29,6 +29,8 @@ def test_no_metadata_validation_actually_skips_metadata_effect() -> None:
     no_mv = run_case(case, ablation_config={"disable_metadata_validation": True})
     assert baseline.decision_action == DecisionAction.REQUIRE_CONFIRMATION
     assert no_mv.decision_action == DecisionAction.ALLOW
+    assert no_mv.affected_by_ablation is True
+    assert "metadata_validation" in no_mv.disabled_modules
 
 
 def test_no_sink_guard_ablation_runs() -> None:

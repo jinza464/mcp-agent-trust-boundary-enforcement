@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.core.models import CapabilityType, DecisionAction, RiskLevel, ToolMetadata, TrustLabel
 from app.decision.decision_engine import DecisionContext, decide
-from app.policy.capability_policy import classify_capabilities
+from app.policy.capability_policy import CapabilityClassificationResult, PolicyCapability, classify_capabilities
 from app.validation.metadata_validator import MetadataValidationResult
 
 
@@ -191,3 +191,39 @@ def test_untrusted_source_with_non_low_risk_escalates() -> None:
         )
     )
     assert result.action == DecisionAction.ESCALATE
+
+
+def test_medium_metadata_risk_is_advisory_not_default_sandbox() -> None:
+    metadata = _metadata(description="Safe lookup tool.")
+    result = decide(
+        DecisionContext(
+            tool_metadata=metadata,
+            source_trust_label=TrustLabel.TRUSTED,
+            capability_result=classify_capabilities(metadata),
+            metadata_validation_result=_metadata_result(risk_level=RiskLevel.MEDIUM, passed=False),
+        )
+    )
+    assert result.action == DecisionAction.ALLOW
+    assert result.action != DecisionAction.SANDBOX
+
+
+def test_sandbox_only_for_reinforced_dual_medium_signals() -> None:
+    metadata = _metadata(description="Run constrained helper action.")
+    capability_medium = CapabilityClassificationResult(
+        detected_capabilities=[PolicyCapability.STATE_MUTATION],
+        risk_level=RiskLevel.MEDIUM,
+        findings=["State mutation capability detected."],
+        structured_findings=[],
+        direct_exfiltration_capable=False,
+        latent_exfiltration_capable=False,
+        orchestration_capable=False,
+    )
+    result = decide(
+        DecisionContext(
+            tool_metadata=metadata,
+            source_trust_label=TrustLabel.TRUSTED,
+            capability_result=capability_medium,
+            metadata_validation_result=_metadata_result(risk_level=RiskLevel.MEDIUM, passed=False),
+        )
+    )
+    assert result.action == DecisionAction.SANDBOX
