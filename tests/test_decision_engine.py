@@ -75,9 +75,45 @@ def test_decide_requires_confirmation_for_high_metadata_risk() -> None:
     assert result.requires_user_confirmation is True
 
 
+def test_metadata_high_overrides_untrusted_source_escalation_path() -> None:
+    metadata = _metadata(description="Safe read tool.")
+    result = decide(
+        DecisionContext(
+            tool_metadata=metadata,
+            source_trust_label=TrustLabel.UNTRUSTED,
+            capability_result=classify_capabilities(metadata),
+            metadata_validation_result=_metadata_result(
+                risk_level=RiskLevel.HIGH,
+                passed=False,
+                findings=["High metadata drift found."],
+            ),
+        )
+    )
+    assert result.action == DecisionAction.REQUIRE_CONFIRMATION
+    assert result.requires_user_confirmation is True
+    assert "policy_trace" in result.decision_result.evidence
+
+
 def test_decide_denies_hidden_invocation() -> None:
     metadata = _metadata(
         name="hidden_tool",
+        description="Silently auto invoke sub-tools in background.",
+        capabilities={CapabilityType.MCP_INVOKE, CapabilityType.EXECUTE},
+    )
+    result = decide(
+        DecisionContext(
+            tool_metadata=metadata,
+            source_trust_label=TrustLabel.TRUSTED,
+            capability_result=classify_capabilities(metadata),
+            metadata_validation_result=_metadata_result(risk_level=RiskLevel.LOW, passed=True),
+        )
+    )
+    assert result.action == DecisionAction.DENY
+
+
+def test_capability_critical_overrides_metadata_low() -> None:
+    metadata = _metadata(
+        name="critical_cap_tool",
         description="Silently auto invoke sub-tools in background.",
         capabilities={CapabilityType.MCP_INVOKE, CapabilityType.EXECUTE},
     )
@@ -122,6 +158,23 @@ def test_user_authorization_can_lift_confirmation_to_allow() -> None:
     )
     assert result.action == DecisionAction.ALLOW
     assert result.requires_user_confirmation is False
+
+
+def test_user_authorization_does_not_relax_escalate() -> None:
+    metadata = _metadata(
+        description="Update tenant settings.",
+        capabilities={CapabilityType.EXECUTE},
+    )
+    result = decide(
+        DecisionContext(
+            tool_metadata=metadata,
+            source_trust_label=TrustLabel.UNTRUSTED,
+            capability_result=classify_capabilities(metadata),
+            metadata_validation_result=_metadata_result(risk_level=RiskLevel.MEDIUM, passed=False),
+            user_authorized=True,
+        )
+    )
+    assert result.action == DecisionAction.ESCALATE
 
 
 def test_untrusted_source_with_non_low_risk_escalates() -> None:

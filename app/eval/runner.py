@@ -23,10 +23,30 @@ class EvalCaseResult(BaseModel):
     is_attack: bool = Field(default=True, description="Whether this evaluated case is an attack case.")
     is_benign: bool = Field(default=False, description="Whether this evaluated case is benign.")
     involves_sink: bool = Field(default=False, description="Whether sink checks are involved for this case.")
+    disabled_modules: list[str] = Field(
+        default_factory=list,
+        description="Disabled modules under current ablation configuration.",
+    )
+    affected_by_ablation: bool = Field(
+        default=False,
+        description="Whether this case is structurally affected by disabled modules.",
+    )
     detected_risk_level: RiskLevel = Field(..., description="Detected risk level from decision engine.")
     decision_action: DecisionAction = Field(..., description="Decision action from decision engine.")
     sink_action: DecisionAction | None = Field(default=None, description="Sink guard action when sink is present.")
     matched_expectation: bool = Field(..., description="Whether result matched expected action/risk/(sink action).")
+    intervention_triggered: bool | None = Field(
+        default=None,
+        description="Prototype-level flag: whether any guard/policy intervention was triggered.",
+    )
+    completed_execution: bool | None = Field(
+        default=None,
+        description="Prototype-level flag: whether case reached normal execution completion path.",
+    )
+    execution_degraded: bool | None = Field(
+        default=None,
+        description="Prototype-level flag: whether execution quality/path was degraded by controls.",
+    )
     reasons: list[str] = Field(default_factory=list, description="Decision reasons.")
     findings: list[str] = Field(default_factory=list, description="Combined findings from pipeline.")
 
@@ -65,6 +85,33 @@ class AblationConfig(BaseModel):
         return self.disable_sink_guard
 
 
+def _disabled_modules(cfg: AblationConfig) -> list[str]:
+    disabled: list[str] = []
+    if cfg.disable_trust_tagging:
+        disabled.append("trust_tagging")
+    if cfg.disable_metadata_validation:
+        disabled.append("metadata_validation")
+    if cfg.disable_sink_guard:
+        disabled.append("sink_guard")
+    return disabled
+
+
+def _case_affected_by_ablation(
+    case: EvalAttackCase,
+    cfg: AblationConfig,
+    baseline_source_trust: TrustLabel,
+) -> bool:
+    """Estimate whether this case is structurally affected by current ablation setting."""
+    affected = False
+    if cfg.disable_trust_tagging and baseline_source_trust != TrustLabel.TRUSTED:
+        affected = True
+    if cfg.disable_metadata_validation and case.old_snapshot is not None:
+        affected = True
+    if cfg.disable_sink_guard and (case.sink_plan is not None or case.involves_sink):
+        affected = True
+    return affected
+
+
 def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None = None) -> EvalCaseResult:
     """Execute one attack case through the minimal local security evaluation loop."""
     cfg = (
@@ -75,11 +122,8 @@ def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None
 
     ablation_notes: list[str] = []
 
-    source_trust = (
-        TrustLabel.TRUSTED
-        if cfg.disable_trust_tagging
-        else tag_source(case.source_type, case.source_content, metadata=case.source_metadata)
-    )
+    baseline_source_trust = tag_source(case.source_type, case.source_content, metadata=case.source_metadata)
+    source_trust = TrustLabel.TRUSTED if cfg.disable_trust_tagging else baseline_source_trust
     if cfg.disable_trust_tagging:
         ablation_notes.append("ablation:disable_trust_tagging (source trust fixed to trusted)")
     capability_result = classify_capabilities(case.tool_metadata)
@@ -125,16 +169,36 @@ def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None
         and (case.expected_sink_action is None or sink_action == case.expected_sink_action)
     )
 
+    decision_blocking = decision_result.action in {
+        DecisionAction.DENY,
+        DecisionAction.ESCALATE,
+        DecisionAction.REQUIRE_CONFIRMATION,
+    }
+    sink_blocking = sink_action in {DecisionAction.DENY, DecisionAction.REQUIRE_CONFIRMATION}
+    intervention_triggered = decision_result.action != DecisionAction.ALLOW or sink_action not in {None, DecisionAction.ALLOW}
+    completed_execution = not (decision_blocking or sink_blocking)
+    execution_degraded = (
+        not completed_execution
+        or decision_result.action in {DecisionAction.SANDBOX, DecisionAction.REDACT}
+    )
+    disabled = _disabled_modules(cfg)
+    affected_by_ablation = _case_affected_by_ablation(case, cfg, baseline_source_trust)
+
     return EvalCaseResult(
         case_id=case.id,
         attack_type=case.attack_type,
         is_attack=case.is_attack,
         is_benign=case.is_benign,
         involves_sink=case.involves_sink or case.sink_plan is not None,
+        disabled_modules=disabled,
+        affected_by_ablation=affected_by_ablation,
         detected_risk_level=decision_result.risk_level,
         decision_action=decision_result.action,
         sink_action=sink_action,
         matched_expectation=matched,
+        intervention_triggered=intervention_triggered,
+        completed_execution=completed_execution,
+        execution_degraded=execution_degraded,
         reasons=decision_result.reasons,
         findings=decision_result.findings + sink_findings + ablation_notes,
     )

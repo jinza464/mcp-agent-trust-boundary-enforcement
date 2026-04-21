@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.models import (
     DecisionAction,
     DecisionResult,
+    ModuleAssessmentResult,
+    RecommendationAction,
     RiskLevel,
     ToolMetadata,
     ToolSnapshot,
@@ -93,6 +95,29 @@ class EngineDecisionResult(BaseModel):
     )
 
 
+class PolicyStageResult(BaseModel):
+    """One policy stage evaluation result for composition traceability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: str = Field(..., description="Policy stage name.")
+    proposed_action: DecisionAction = Field(..., description="Stage-local action proposal.")
+    risk_level: RiskLevel = Field(..., description="Stage-local risk estimate.")
+    triggered: bool = Field(..., description="Whether this stage materially triggered.")
+    reasons: list[str] = Field(default_factory=list, description="Stage-local reasons.")
+
+
+class PolicyCompositionState(BaseModel):
+    """Intermediate policy composition state before final enforcement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_risk: RiskLevel
+    capability_risk: RiskLevel
+    metadata_risk: RiskLevel
+    stage_results: list[PolicyStageResult] = Field(default_factory=list)
+
+
 def _risk_rank(level: RiskLevel) -> int:
     return {
         RiskLevel.LOW: 1,
@@ -114,6 +139,24 @@ def _source_risk_label(source_trust: TrustLabel) -> RiskLevel:
     return RiskLevel.HIGH
 
 
+def _recommendation_from_risk(risk: RiskLevel) -> RecommendationAction:
+    if risk in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+        return RecommendationAction.BLOCK
+    if risk == RiskLevel.MEDIUM:
+        return RecommendationAction.REVIEW
+    return RecommendationAction.ALLOW
+
+
+def _action_rank(action: DecisionAction) -> int:
+    return {
+        DecisionAction.ALLOW: 1,
+        DecisionAction.SANDBOX: 2,
+        DecisionAction.REQUIRE_CONFIRMATION: 3,
+        DecisionAction.ESCALATE: 4,
+        DecisionAction.DENY: 5,
+    }[action]
+
+
 def _default_metadata_validation() -> MetadataValidationResult:
     return MetadataValidationResult(
         passed=True,
@@ -124,8 +167,182 @@ def _default_metadata_validation() -> MetadataValidationResult:
     )
 
 
+def _module_recommendations(
+    *,
+    source_trust: TrustLabel,
+    source_risk: RiskLevel,
+    capability_result: CapabilityClassificationResult,
+    metadata_result: MetadataValidationResult,
+) -> list[ModuleAssessmentResult]:
+    return [
+        ModuleAssessmentResult(
+            module_name="trust_tagger",
+            recommendation=_recommendation_from_risk(source_risk),
+            risk_level=source_risk,
+            reasons=[f"Source trust label={source_trust.value}."],
+            findings=[f"Source trust label: {source_trust.value}."],
+            evidence={"source_trust_label": source_trust.value},
+        ),
+        ModuleAssessmentResult(
+            module_name="capability_policy",
+            recommendation=_recommendation_from_risk(capability_result.risk_level),
+            risk_level=capability_result.risk_level,
+            reasons=["Capability policy risk evaluation result."],
+            findings=capability_result.findings,
+            evidence={"detected_capabilities": sorted(set(capability_result.detected_capabilities))},
+        ),
+        ModuleAssessmentResult(
+            module_name="metadata_validator",
+            recommendation=_recommendation_from_risk(metadata_result.risk_level),
+            risk_level=metadata_result.risk_level,
+            reasons=["Metadata validator risk evaluation result."],
+            findings=metadata_result.findings,
+            evidence={
+                "changed_fields": metadata_result.changed_fields,
+                "change_categories": getattr(metadata_result, "change_categories", []),
+            },
+        ),
+    ]
+
+
+def _policy_hard_block(detected_caps: set[str], metadata_risk: RiskLevel) -> PolicyStageResult:
+    reasons: list[str] = []
+    triggered = False
+    proposed = DecisionAction.ALLOW
+    risk = RiskLevel.LOW
+
+    if "hidden_invocation" in detected_caps:
+        triggered = True
+        proposed = DecisionAction.DENY
+        risk = RiskLevel.CRITICAL
+        reasons.append("Hidden invocation capability triggers hard block.")
+    elif "read_secret" in detected_caps and "network_send" in detected_caps:
+        triggered = True
+        proposed = DecisionAction.DENY
+        risk = RiskLevel.CRITICAL
+        reasons.append("Read-secret + network-send combination triggers hard block.")
+    elif metadata_risk == RiskLevel.CRITICAL:
+        triggered = True
+        proposed = DecisionAction.DENY
+        risk = RiskLevel.CRITICAL
+        reasons.append("Metadata validator marked update as critical risk.")
+
+    return PolicyStageResult(
+        stage="hard_block_policy",
+        proposed_action=proposed,
+        risk_level=risk,
+        triggered=triggered,
+        reasons=reasons,
+    )
+
+
+def _policy_metadata(metadata_risk: RiskLevel) -> PolicyStageResult:
+    reasons: list[str] = []
+    triggered = False
+    proposed = DecisionAction.ALLOW
+
+    if metadata_risk == RiskLevel.HIGH:
+        triggered = True
+        proposed = DecisionAction.REQUIRE_CONFIRMATION
+        reasons.append("High metadata risk requires explicit confirmation.")
+    elif metadata_risk == RiskLevel.MEDIUM:
+        triggered = True
+        proposed = DecisionAction.SANDBOX
+        reasons.append("Medium metadata risk suggests sandboxing.")
+
+    return PolicyStageResult(
+        stage="metadata_policy",
+        proposed_action=proposed,
+        risk_level=metadata_risk,
+        triggered=triggered,
+        reasons=reasons,
+    )
+
+
+def _policy_source_trust(
+    source_trust: TrustLabel,
+    source_risk: RiskLevel,
+    capability_risk: RiskLevel,
+    metadata_risk: RiskLevel,
+) -> PolicyStageResult:
+    reasons: list[str] = []
+    triggered = False
+    proposed = DecisionAction.ALLOW
+
+    if source_trust == TrustLabel.UNTRUSTED and _max_risk(source_risk, capability_risk, metadata_risk) in {
+        RiskLevel.MEDIUM,
+        RiskLevel.HIGH,
+        RiskLevel.CRITICAL,
+    }:
+        triggered = True
+        proposed = DecisionAction.ESCALATE
+        reasons.append("Untrusted source with non-low risk requires escalation.")
+
+    return PolicyStageResult(
+        stage="source_trust_policy",
+        proposed_action=proposed,
+        risk_level=source_risk,
+        triggered=triggered,
+        reasons=reasons,
+    )
+
+
+def _policy_capability(capability_risk: RiskLevel) -> PolicyStageResult:
+    reasons: list[str] = []
+    triggered = False
+    proposed = DecisionAction.ALLOW
+
+    if capability_risk == RiskLevel.HIGH:
+        triggered = True
+        proposed = DecisionAction.REQUIRE_CONFIRMATION
+        reasons.append("High capability risk requires explicit confirmation.")
+    elif capability_risk == RiskLevel.MEDIUM:
+        triggered = True
+        proposed = DecisionAction.SANDBOX
+        reasons.append("Medium capability risk suggests sandboxing.")
+
+    return PolicyStageResult(
+        stage="capability_policy",
+        proposed_action=proposed,
+        risk_level=capability_risk,
+        triggered=triggered,
+        reasons=reasons,
+    )
+
+
+def _compose_action(stage_results: list[PolicyStageResult]) -> tuple[DecisionAction, list[str]]:
+    stage_map = {item.stage: item for item in stage_results}
+    reasons: list[str] = []
+
+    hard_block = stage_map["hard_block_policy"]
+    if hard_block.triggered:
+        return DecisionAction.DENY, hard_block.reasons or ["Hard-block policy triggered."]
+
+    metadata_stage = stage_map["metadata_policy"]
+    # Preserve baseline behavior: high metadata risk gate takes priority over source escalation.
+    if metadata_stage.proposed_action == DecisionAction.REQUIRE_CONFIRMATION:
+        return DecisionAction.REQUIRE_CONFIRMATION, metadata_stage.reasons
+
+    source_stage = stage_map["source_trust_policy"]
+    capability_stage = stage_map["capability_policy"]
+
+    candidate_actions = [source_stage.proposed_action, capability_stage.proposed_action, metadata_stage.proposed_action]
+    action = max(candidate_actions, key=_action_rank)
+
+    if source_stage.triggered:
+        reasons.extend(source_stage.reasons)
+    if capability_stage.triggered:
+        reasons.extend(capability_stage.reasons)
+    if metadata_stage.triggered:
+        reasons.extend(metadata_stage.reasons)
+
+    if not reasons:
+        reasons = ["No blocking risk signal detected under current policy rules."]
+    return action, reasons
+
+
 def decide(context: DecisionContext | dict) -> EngineDecisionResult:
-    """Make an allow/intercept/escalate/deny decision using explicit deterministic rules."""
+    """Make a composed enforcement decision via staged policy evaluation."""
     ctx = context if isinstance(context, DecisionContext) else DecisionContext.model_validate(context)
 
     source_trust = ctx.source_trust_label or tag_source(
@@ -151,54 +368,48 @@ def decide(context: DecisionContext | dict) -> EngineDecisionResult:
     findings.append(f"Source trust label: {source_trust.value}.")
 
     detected_caps = set(capability_result.detected_capabilities)
+    source_risk = _source_risk_label(source_trust)
+    capability_risk = capability_result.risk_level
+    metadata_risk = metadata_result.risk_level
 
-    hard_block = (
-        "hidden_invocation" in detected_caps
-        or ("read_secret" in detected_caps and "network_send" in detected_caps)
+    state = PolicyCompositionState(
+        source_risk=source_risk,
+        capability_risk=capability_risk,
+        metadata_risk=metadata_risk,
+        stage_results=[
+            _policy_hard_block(detected_caps, metadata_risk),
+            _policy_metadata(metadata_risk),
+            _policy_source_trust(source_trust, source_risk, capability_risk, metadata_risk),
+            _policy_capability(capability_risk),
+        ],
     )
 
-    aggregate_risk = _max_risk(
-        capability_result.risk_level,
-        metadata_result.risk_level,
-        _source_risk_label(source_trust),
-    )
+    action, composition_reasons = _compose_action(state.stage_results)
+    reasons.extend(composition_reasons)
 
-    # Primary deterministic policy
-    if hard_block:
-        action = DecisionAction.DENY
-        reasons.append("Hard-block rule triggered by critical capability pattern.")
-    elif metadata_result.risk_level == RiskLevel.CRITICAL:
-        action = DecisionAction.DENY
-        reasons.append("Metadata validation marked this update as critical risk.")
-    elif metadata_result.risk_level == RiskLevel.HIGH:
-        action = DecisionAction.REQUIRE_CONFIRMATION
-        reasons.append("High-risk metadata change requires explicit user confirmation.")
-    elif (
-        source_trust == TrustLabel.UNTRUSTED
-        and aggregate_risk in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}
-    ):
-        action = DecisionAction.ESCALATE
-        reasons.append("Untrusted source combined with non-low risk requires escalation.")
-    elif aggregate_risk == RiskLevel.HIGH:
-        action = DecisionAction.REQUIRE_CONFIRMATION
-        reasons.append("High aggregate risk requires explicit user confirmation.")
-    else:
-        action = DecisionAction.ALLOW
-        reasons.append("No blocking risk signal detected under current policy rules.")
+    aggregate_risk = _max_risk(capability_risk, metadata_risk, source_risk)
 
     # User authorization can only relax confirmation gates in v1.
     # It never overrides DENY or ESCALATE.
     if ctx.user_authorized and action == DecisionAction.REQUIRE_CONFIRMATION:
         action = DecisionAction.ALLOW
-        reasons.append("User explicitly authorized this operation; confirmation gate lifted.")
+        reasons.append("User authorization relaxation policy: confirmation gate lifted.")
 
     requires_user_confirmation = action == DecisionAction.REQUIRE_CONFIRMATION
+
+    module_recommendations = _module_recommendations(
+        source_trust=source_trust,
+        source_risk=source_risk,
+        capability_result=capability_result,
+        metadata_result=metadata_result,
+    )
 
     decision_result = DecisionResult(
         decision_id=f"dec-{uuid4().hex}",
         action=action,
         risk_level=aggregate_risk,
         trust_label=source_trust,
+        module_recommendations=module_recommendations,
         reasons=reasons,
         findings=findings,
         confidence=0.9,
@@ -211,10 +422,14 @@ def decide(context: DecisionContext | dict) -> EngineDecisionResult:
         required_controls=["explicit_user_confirmation"] if requires_user_confirmation else [],
         evidence={
             "source_trust_label": source_trust.value,
+            "source_risk": source_risk.value,
+            "capability_risk": capability_risk.value,
+            "metadata_risk": metadata_risk.value,
             "detected_capabilities": sorted(detected_caps),
             "metadata_risk_level": metadata_result.risk_level.value,
             "metadata_changed_fields": metadata_result.changed_fields,
             "user_authorized": ctx.user_authorized,
+            "policy_trace": [stage.model_dump(mode="json") for stage in state.stage_results],
         },
     )
 
@@ -226,5 +441,4 @@ def decide(context: DecisionContext | dict) -> EngineDecisionResult:
         requires_user_confirmation=requires_user_confirmation,
         decision_result=decision_result,
     )
-
 

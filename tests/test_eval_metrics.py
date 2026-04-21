@@ -22,6 +22,9 @@ def _result(
     is_attack: bool = True,
     is_benign: bool = False,
     involves_sink: bool = False,
+    intervention_triggered: bool | None = None,
+    completed_execution: bool | None = None,
+    execution_degraded: bool | None = None,
 ) -> EvalCaseResult:
     return EvalCaseResult(
         case_id=case_id,
@@ -33,6 +36,9 @@ def _result(
         decision_action=decision,
         sink_action=sink_action,
         matched_expectation=matched,
+        intervention_triggered=intervention_triggered,
+        completed_execution=completed_execution,
+        execution_degraded=execution_degraded,
         reasons=["reason"],
         findings=["finding"],
     )
@@ -120,10 +126,88 @@ def test_summarize_results_normal() -> None:
     assert summary.decision_action_distribution == {"require_confirmation": 2, "deny": 1, "allow": 2}
     assert summary.sink_action_distribution == {"none": 3, "deny": 1, "require_confirmation": 1}
     assert summary.attack_success_rate == 0.0
-    assert summary.leak_rate == 0.5
+    assert summary.leak_rate == 0.0
     assert summary.escalation_rate == 0.0
     assert summary.false_positive_rate == 0.5
     assert summary.utility_loss == 0.5
+
+
+def test_false_positive_but_still_executed_is_not_utility_loss() -> None:
+    results = [
+        _result(
+            case_id="b1",
+            attack_type="benign-safe",
+            risk=RiskLevel.LOW,
+            decision=DecisionAction.ALLOW,
+            matched=False,
+            is_attack=False,
+            is_benign=True,
+            intervention_triggered=True,
+            completed_execution=True,
+            execution_degraded=False,
+        )
+    ]
+    summary = summarize_results(results)
+    assert summary.false_positive_rate == 1.0
+    assert summary.utility_loss == 0.0
+
+
+def test_confirmation_induced_utility_degradation() -> None:
+    results = [
+        _result(
+            case_id="b2",
+            attack_type="benign-safe",
+            risk=RiskLevel.MEDIUM,
+            decision=DecisionAction.REQUIRE_CONFIRMATION,
+            matched=False,
+            is_attack=False,
+            is_benign=True,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        )
+    ]
+    summary = summarize_results(results)
+    assert summary.false_positive_rate == 1.0
+    assert summary.utility_loss == 1.0
+
+
+def test_sink_confirmation_vs_sink_deny() -> None:
+    results = [
+        _result(
+            case_id="s1",
+            attack_type="benign-safe-sink",
+            risk=RiskLevel.LOW,
+            decision=DecisionAction.ALLOW,
+            sink_action=DecisionAction.REQUIRE_CONFIRMATION,
+            matched=False,
+            is_attack=False,
+            is_benign=True,
+            involves_sink=True,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        ),
+        _result(
+            case_id="s2",
+            attack_type="benign-safe-sink",
+            risk=RiskLevel.LOW,
+            decision=DecisionAction.ALLOW,
+            sink_action=DecisionAction.DENY,
+            matched=False,
+            is_attack=False,
+            is_benign=True,
+            involves_sink=True,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        ),
+    ]
+    summary = summarize_results(results)
+    assert summary.sink_action_distribution == {"require_confirmation": 1, "deny": 1}
+    assert summary.leak_rate == 0.0
+    assert summary.false_positive_rate == 1.0
+    assert summary.utility_loss == 1.0
 
 
 def test_export_results_to_json() -> None:

@@ -1,0 +1,38 @@
+[
+  {
+    "configuration": "baseline",
+    "match_rate": 1.0,
+    "attack_success_rate": 0.10526315789473684,
+    "leak_rate": 0.75,
+    "false_positive_rate": 0.3333333333333333,
+    "utility_loss": 0.3333333333333333,
+    "escalation_rate": 0.08
+  },
+  {
+    "configuration": "no_trust_tagging",
+    "match_rate": 0.88,
+    "attack_success_rate": 0.21052631578947367,
+    "leak_rate": 0.75,
+    "false_positive_rate": 0.3333333333333333,
+    "utility_loss": 0.3333333333333333,
+    "escalation_rate": 0.0
+  },
+  {
+    "configuration": "no_metadata_validation",
+    "match_rate": 0.8,
+    "attack_success_rate": 0.3157894736842105,
+    "leak_rate": 0.75,
+    "false_positive_rate": 0.3333333333333333,
+    "utility_loss": 0.3333333333333333,
+    "escalation_rate": 0.08
+  },
+  {
+    "configuration": "no_sink_guard",
+    "match_rate": 0.68,
+    "attack_success_rate": 0.15789473684210525,
+    "leak_rate": 1.0,
+    "false_positive_rate": 0.16666666666666666,
+    "utility_loss": 0.16666666666666666,
+    "escalation_rate": 0.08
+  }
+]
