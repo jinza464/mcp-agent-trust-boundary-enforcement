@@ -40,11 +40,16 @@ def test_allowed_execution_with_mock_output() -> None:
     assert result.final_status == "executed"
     assert result.final_execution_outcome is not None
     assert result.final_execution_outcome.executed is True
+    assert result.entered_execution_stage is True
+    assert result.completed_execution is True
+    assert result.execution_degraded is False
+    assert result.output_restricted is False
+    assert result.output_replaced is False
     assert result.decision_result.action == DecisionAction.ALLOW
     assert result.invocation_plan is not None
     assert result.simulated_tool_output is not None
     assert result.simulated_tool_output.content["tool_name"] == "docs_search"
-    assert any(record.stage == "mock_execution" and record.event == "execution_completed" for record in result.trace_records)
+    assert any(record.stage == "mock_execution" and record.event == "execution_completed" for record in result.execution_trace_records)
 
 
 def test_blocked_decision_before_execution() -> None:
@@ -63,6 +68,9 @@ def test_blocked_decision_before_execution() -> None:
     assert result.final_execution_outcome is not None
     assert result.final_execution_outcome.executed is False
     assert result.final_execution_outcome.blocked_by == "decision_layer"
+    assert result.entered_execution_stage is False
+    assert result.completed_execution is False
+    assert result.output_replaced is True
     assert result.simulated_tool_output is None
 
 
@@ -89,10 +97,13 @@ def test_sink_blocked_execution() -> None:
     assert result.final_execution_outcome is not None
     assert result.final_execution_outcome.executed is False
     assert result.final_execution_outcome.blocked_by == "sink_layer"
+    assert result.entered_execution_stage is False
+    assert result.completed_execution is False
+    assert result.output_replaced is True
     assert result.simulated_tool_output is None
 
 
-def test_confirmation_required_execution_path() -> None:
+def test_confirmation_required_but_completed() -> None:
     telemetry_tool = _tool(
         tool_id="tool.telemetry",
         name="telemetry_sender",
@@ -106,14 +117,15 @@ def test_confirmation_required_execution_path() -> None:
         preferred_tool_name="telemetry_sender",
         sink_payload={"event": "build_completed", "client_id": "a1"},
         sink_metadata={"sink_type": "network_send", "endpoint": "https://hooks.example.com/callback"},
-        user_authorized=False,
+        user_authorized=True,
     )
 
     assert result.decision_result.action == DecisionAction.ALLOW
     assert result.sink_result is not None
     assert result.sink_result.requires_user_confirmation is True
-    assert result.final_status == "awaiting_user_confirmation"
+    assert result.final_status == "executed"
     assert result.final_execution_outcome is not None
-    assert result.final_execution_outcome.requires_user_confirmation is True
-    assert result.simulated_tool_output is None
-
+    assert result.final_execution_outcome.requires_user_confirmation is False
+    assert result.entered_execution_stage is True
+    assert result.completed_execution is True
+    assert result.simulated_tool_output is not None

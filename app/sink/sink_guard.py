@@ -40,6 +40,18 @@ class SinkInspectionResult(BaseModel):
         default_factory=list,
         description="Explicit sink risk factors used in decision.",
     )
+    fragment_suspicion: bool = Field(
+        default=False,
+        description="Whether payload shows fragment/chunk-style suspicious leakage signal.",
+    )
+    staged_exfil_signals: list[str] = Field(
+        default_factory=list,
+        description="Structured staged-outbound/exfiltration signals.",
+    )
+    payload_sensitivity_class: str = Field(
+        default="low_sensitivity",
+        description="Payload sensitivity class: low_sensitivity / suspicious / sensitive.",
+    )
 
 
 def _normalize_planned_action(planned_action: DecisionAction | str) -> str:
@@ -58,6 +70,23 @@ def _flatten_payload(payload: Any) -> str:
 
 
 def _contains_sensitive_content(text: str) -> bool:
+    negation_markers = [
+        "no secret",
+        "no secrets",
+        "without secret",
+        "without secrets",
+        "no token",
+        "without token",
+        "no password",
+        "without password",
+    ]
+    if any(marker in text for marker in negation_markers):
+        # Avoid obvious false positives such as "no secrets in payload".
+        text = text.replace("no secrets", "").replace("no secret", "")
+        text = text.replace("without secrets", "").replace("without secret", "")
+        text = text.replace("no token", "").replace("without token", "")
+        text = text.replace("no password", "").replace("without password", "")
+
     keyword_hits = [
         "token",
         "password",
@@ -173,11 +202,45 @@ def _sensitivity_signals(payload: Any, payload_text: str) -> list[str]:
             signals.append("fragmented_payload_marker")
         if {"chunk_index", "total_chunks", "transfer_id", "batch_id"}.intersection(keys):
             signals.append("staged_transfer_marker")
+        if any(re.match(r"^(stage|step|part|chunk)[_\-]?\d+$", key) for key in keys):
+            signals.append("staged_transfer_marker")
+        if {"callback_id", "sequence_id", "retry_id", "handoff_id"}.intersection(keys):
+            signals.append("staged_transfer_marker")
         chunk_value = payload.get("chunk") or payload.get("part") or payload.get("fragment")
         if isinstance(chunk_value, str) and len(chunk_value) >= 16 and re.match(r"^[A-Za-z0-9+/=_-]+$", chunk_value):
             signals.append("fragment_chunk_high_entropy")
 
     return sorted(set(signals))
+
+
+def _payload_sensitivity_class(signals: list[str]) -> str:
+    signal_set = set(signals)
+    if {"explicit_secret_marker", "auth_material_marker", "pii_marker"}.intersection(signal_set):
+        return "sensitive"
+    if {"fragmented_payload_marker", "fragment_chunk_high_entropy", "staged_transfer_marker", "obfuscated_payload_pattern"}.intersection(signal_set):
+        return "suspicious"
+    return "low_sensitivity"
+
+
+def _staged_exfil_signals(
+    *,
+    endpoint_class: str,
+    endpoint: str | None,
+    signals: list[str],
+) -> list[str]:
+    output: list[str] = []
+    for marker in ("fragmented_payload_marker", "fragment_chunk_high_entropy", "staged_transfer_marker", "obfuscated_payload_pattern"):
+        if marker in signals:
+            output.append(marker)
+    if endpoint_class == "external":
+        output.append("external_endpoint")
+        if endpoint and ("callback" in endpoint or "webhook" in endpoint):
+            output.append("external_callback_channel")
+    elif endpoint_class == "allowlisted":
+        output.append("allowlisted_endpoint")
+    elif endpoint_class == "internal":
+        output.append("internal_endpoint")
+    return output
 
 
 def _is_benign_report_path(path: str) -> bool:
@@ -216,6 +279,12 @@ def inspect_sink(
     staged_marker = "staged_transfer_marker" in sensitive_signals
     fragmented_marker = any(item in sensitive_signals for item in ["fragmented_payload_marker", "fragment_chunk_high_entropy"])
     obfuscated_marker = "obfuscated_payload_pattern" in sensitive_signals
+    payload_sensitivity_class = _payload_sensitivity_class(sensitive_signals)
+    staged_signals = _staged_exfil_signals(
+        endpoint_class=endpoint_class,
+        endpoint=endpoint,
+        signals=sensitive_signals,
+    )
 
     if is_network_sink:
         findings.append("Detected network send sink.")
@@ -249,7 +318,12 @@ def inspect_sink(
             sink_risk_factors.append("external_callback_telemetry")
         elif endpoint_class in {"internal", "allowlisted"}:
             # Internal/allowlisted sync is allowed unless sensitive obfuscation indicates risk.
-            if obfuscated_marker and action != DecisionAction.DENY:
+            if payload_sensitivity_class == "sensitive" and action != DecisionAction.DENY:
+                action = DecisionAction.REQUIRE_CONFIRMATION
+                risk_level = RiskLevel.HIGH
+                blocked_reasons.append("Sensitive payload to non-external endpoint requires confirmation.")
+                sink_risk_factors.append("non_external_sensitive_payload")
+            elif obfuscated_marker and action != DecisionAction.DENY:
                 action = DecisionAction.REQUIRE_CONFIRMATION
                 risk_level = RiskLevel.MEDIUM
                 blocked_reasons.append("Obfuscated payload to non-external endpoint requires confirmation.")
@@ -317,4 +391,7 @@ def inspect_sink(
         endpoint_class=endpoint_class,
         sensitive_payload_signals=sensitive_signals,
         sink_risk_factors=sorted(set(sink_risk_factors)),
+        fragment_suspicion=fragmented_marker,
+        staged_exfil_signals=staged_signals,
+        payload_sensitivity_class=payload_sensitivity_class,
     )

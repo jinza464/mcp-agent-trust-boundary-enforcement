@@ -57,6 +57,9 @@ def test_summarize_results_empty() -> None:
     assert summary.escalation_rate == 0.0
     assert summary.false_positive_rate == 0.0
     assert summary.utility_loss == 0.0
+    assert summary.execution_completion_rate == 0.0
+    assert summary.intervention_rate == 0.0
+    assert summary.hard_block_rate == 0.0
 
 
 def test_summarize_results_normal() -> None:
@@ -130,6 +133,9 @@ def test_summarize_results_normal() -> None:
     assert summary.escalation_rate == 0.0
     assert summary.false_positive_rate == 0.5
     assert summary.utility_loss == 0.5
+    assert summary.execution_completion_rate == 0.2
+    assert summary.intervention_rate == 0.8
+    assert summary.hard_block_rate == 0.2
 
 
 def test_false_positive_but_still_executed_is_not_utility_loss() -> None:
@@ -150,6 +156,9 @@ def test_false_positive_but_still_executed_is_not_utility_loss() -> None:
     summary = summarize_results(results)
     assert summary.false_positive_rate == 1.0
     assert summary.utility_loss == 0.0
+    assert summary.execution_completion_rate == 1.0
+    assert summary.intervention_rate == 1.0
+    assert summary.hard_block_rate == 0.0
 
 
 def test_confirmation_induced_utility_degradation() -> None:
@@ -170,6 +179,9 @@ def test_confirmation_induced_utility_degradation() -> None:
     summary = summarize_results(results)
     assert summary.false_positive_rate == 1.0
     assert summary.utility_loss == 1.0
+    assert summary.execution_completion_rate == 0.0
+    assert summary.intervention_rate == 1.0
+    assert summary.hard_block_rate == 0.0
 
 
 def test_sink_confirmation_vs_sink_deny() -> None:
@@ -208,6 +220,54 @@ def test_sink_confirmation_vs_sink_deny() -> None:
     assert summary.leak_rate == 0.0
     assert summary.false_positive_rate == 1.0
     assert summary.utility_loss == 1.0
+    assert summary.execution_completion_rate == 0.0
+    assert summary.intervention_rate == 1.0
+    assert summary.hard_block_rate == 0.5
+
+
+def test_hard_deny_vs_confirmation_vs_escalate_rates() -> None:
+    results = [
+        _result(
+            case_id="a1",
+            attack_type="attack",
+            risk=RiskLevel.CRITICAL,
+            decision=DecisionAction.DENY,
+            matched=True,
+            is_attack=True,
+            is_benign=False,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        ),
+        _result(
+            case_id="a2",
+            attack_type="attack",
+            risk=RiskLevel.HIGH,
+            decision=DecisionAction.REQUIRE_CONFIRMATION,
+            matched=True,
+            is_attack=True,
+            is_benign=False,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        ),
+        _result(
+            case_id="a3",
+            attack_type="attack",
+            risk=RiskLevel.MEDIUM,
+            decision=DecisionAction.ESCALATE,
+            matched=True,
+            is_attack=True,
+            is_benign=False,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        ),
+    ]
+    summary = summarize_results(results)
+    assert summary.hard_block_rate == (1 / 3)
+    assert summary.intervention_rate == 1.0
+    assert summary.escalation_rate == (1 / 3)
 
 
 def test_export_results_to_json() -> None:

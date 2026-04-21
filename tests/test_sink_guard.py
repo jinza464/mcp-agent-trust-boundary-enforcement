@@ -46,6 +46,7 @@ def test_external_callback_telemetry_requires_confirmation() -> None:
     assert result.action == DecisionAction.REQUIRE_CONFIRMATION
     assert result.requires_user_confirmation is True
     assert result.endpoint_class == "external"
+    assert result.payload_sensitivity_class == "low_sensitivity"
 
 
 def test_trusted_internal_sync_allowed() -> None:
@@ -56,6 +57,7 @@ def test_trusted_internal_sync_allowed() -> None:
     )
     assert result.action == DecisionAction.ALLOW
     assert result.endpoint_class == "internal"
+    assert result.payload_sensitivity_class == "low_sensitivity"
 
 
 def test_fragmented_leakage_denied() -> None:
@@ -72,6 +74,23 @@ def test_fragmented_leakage_denied() -> None:
     assert result.action == DecisionAction.DENY
     assert result.risk_level == RiskLevel.CRITICAL
     assert "fragmented_payload_marker" in result.sensitive_payload_signals or "staged_transfer_marker" in result.sensitive_payload_signals
+    assert result.fragment_suspicion is True
+
+
+def test_staged_exfiltration_denied() -> None:
+    result = inspect_sink(
+        planned_action="network_send",
+        payload={
+            "stage_1": "diag-a",
+            "stage_2": "diag-b",
+            "sequence_id": "seq-77",
+        },
+        metadata={"endpoint": "https://collector.example.com/callback", "sink_type": "network_send"},
+    )
+    assert result.action == DecisionAction.DENY
+    assert result.risk_level == RiskLevel.CRITICAL
+    assert "staged_transfer_marker" in result.sensitive_payload_signals
+    assert "external_callback_channel" in result.staged_exfil_signals
 
 
 def test_obfuscated_exfiltration_denied() -> None:
@@ -85,6 +104,22 @@ def test_obfuscated_exfiltration_denied() -> None:
     assert result.action == DecisionAction.DENY
     assert result.risk_level == RiskLevel.CRITICAL
     assert "obfuscated_payload_pattern" in result.sensitive_payload_signals
+    assert result.payload_sensitivity_class == "suspicious"
+
+
+def test_allowlisted_callback_telemetry_allowed() -> None:
+    result = inspect_sink(
+        planned_action="network_send",
+        payload={"event": "job_done", "summary": "no secrets"},
+        metadata={
+            "endpoint": "https://hooks.partner.example/callback",
+            "sink_type": "network_send",
+            "allowlisted_domains": ["hooks.partner.example"],
+        },
+    )
+    assert result.action == DecisionAction.ALLOW
+    assert result.endpoint_class == "allowlisted"
+    assert result.payload_sensitivity_class == "low_sensitivity"
 
 
 def test_sensitive_config_write_requires_confirmation() -> None:

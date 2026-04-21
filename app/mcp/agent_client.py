@@ -63,9 +63,14 @@ class FinalExecutionOutcome(BaseModel):
     requires_user_confirmation: bool = False
     decision_layer_action: DecisionAction | None = None
     sink_layer_action: DecisionAction | None = None
+    entered_execution_stage: bool = False
+    completed_execution: bool = False
+    execution_degraded: bool = False
+    output_restricted: bool = False
+    output_replaced: bool = False
 
 
-class TraceRecord(BaseModel):
+class ExecutionTraceRecord(BaseModel):
     """Structured runtime trace record for audit and analysis."""
 
     model_config = ConfigDict(extra="forbid")
@@ -74,6 +79,10 @@ class TraceRecord(BaseModel):
     stage: str
     event: str
     details: dict[str, object] = Field(default_factory=dict)
+
+
+# Backward-compatibility alias for earlier prototype naming.
+TraceRecord = ExecutionTraceRecord
 
 
 class AgentExecutionResult(BaseModel):
@@ -91,8 +100,14 @@ class AgentExecutionResult(BaseModel):
     invocation_plan: InvocationPlan | None = None
     simulated_tool_output: SimulatedToolOutput | None = None
     final_execution_outcome: FinalExecutionOutcome | None = None
+    entered_execution_stage: bool = False
+    completed_execution: bool = False
+    execution_degraded: bool = False
+    output_restricted: bool = False
+    output_replaced: bool = False
     final_status: str
-    trace_records: list[TraceRecord] = Field(default_factory=list)
+    execution_trace_records: list[ExecutionTraceRecord] = Field(default_factory=list)
+    trace_records: list[ExecutionTraceRecord] = Field(default_factory=list)
     logs: list[str] = Field(default_factory=list)
 
 
@@ -202,11 +217,11 @@ class MCPAgentClient:
     ) -> AgentExecutionResult:
         """Execute one request with full trust-boundary enforcement chain."""
         logs: list[str] = []
-        trace_records: list[TraceRecord] = []
+        trace_records: list[ExecutionTraceRecord] = []
 
         def add_trace(stage: str, event: str, **details: object) -> None:
             trace_records.append(
-                TraceRecord(
+                ExecutionTraceRecord(
                     timestamp=datetime.now(UTC),
                     stage=stage,
                     event=event,
@@ -349,9 +364,22 @@ class MCPAgentClient:
         add_trace("execution_outcome", "final_status_resolved", final_status=final_status, blocked_by=blocked_by or "")
 
         simulated_output: SimulatedToolOutput | None = None
+        entered_execution_stage = executed
+        completed_execution = executed
+        execution_degraded = (
+            decision_result.action in {DecisionAction.SANDBOX, DecisionAction.REDACT}
+            or (sink_result is not None and sink_result.action == DecisionAction.REQUIRE_CONFIRMATION and not user_authorized)
+            or not completed_execution
+        )
+        output_restricted = decision_result.action in {DecisionAction.SANDBOX, DecisionAction.REDACT}
+        output_replaced = not executed
+
         if executed:
             add_trace("mock_execution", "execution_started", invocation_id=plan.invocation_id, tool_name=tool.name)
             simulated_output = self._build_mock_output(tool, plan)
+            if output_restricted:
+                simulated_output.content["result_summary"] = "Mock execution completed with restricted output."
+                simulated_output.content["output_restricted"] = True
             add_trace("mock_execution", "execution_completed", output_type=simulated_output.output_type)
 
         outcome = FinalExecutionOutcome(
@@ -361,6 +389,11 @@ class MCPAgentClient:
             requires_user_confirmation=requires_confirmation,
             decision_layer_action=decision_result.action,
             sink_layer_action=sink_result.action if sink_result else None,
+            entered_execution_stage=entered_execution_stage,
+            completed_execution=completed_execution,
+            execution_degraded=execution_degraded,
+            output_restricted=output_restricted,
+            output_replaced=output_replaced,
         )
 
         self.registry.register_tool(tool)
@@ -382,7 +415,13 @@ class MCPAgentClient:
             invocation_plan=plan,
             simulated_tool_output=simulated_output,
             final_execution_outcome=outcome,
+            entered_execution_stage=entered_execution_stage,
+            completed_execution=completed_execution,
+            execution_degraded=execution_degraded,
+            output_restricted=output_restricted,
+            output_replaced=output_replaced,
             final_status=final_status,
+            execution_trace_records=trace_records,
             trace_records=trace_records,
             logs=logs,
         )
