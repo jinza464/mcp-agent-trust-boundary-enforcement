@@ -58,7 +58,31 @@ def classify_capabilities(tool_metadata: ToolMetadata) -> CapabilityClassificati
         "session cookie",
     }
     write_keywords = {"write", "save", "append", "overwrite", "delete file", "create file", "edit file"}
-    network_keywords = {"send", "post", "webhook", "callback", "http request", "upload", "exfiltrate"}
+    strong_network_keywords = {
+        "webhook",
+        "callback",
+        "http request",
+        "endpoint",
+        "upload",
+        "exfiltrate",
+        "outbound",
+        "egress",
+        "https://",
+        "http://",
+    }
+    weak_network_keywords = {"send", "post", "transmit", "forward"}
+    network_negation_markers = {
+        "without sending",
+        "without outbound",
+        "without network",
+        "no outbound",
+        "no external",
+        "do not send",
+        "never send",
+        "local only",
+        "offline only",
+        "without exfiltration",
+    }
     state_change_keywords = {"create", "update", "delete", "modify", "set", "configure", "revoke", "grant"}
     hidden_keywords = {"hidden", "silent", "silently", "background", "without user confirmation", "auto invoke"}
 
@@ -77,7 +101,15 @@ def classify_capabilities(tool_metadata: ToolMetadata) -> CapabilityClassificati
         detected.add("file_write")
         findings.append("Detected file write/modify semantics from capability or text patterns.")
 
-    if CapabilityType.NETWORK in tool_metadata.capabilities or _contains_any(combined_text, network_keywords):
+    has_strong_network_signal = _contains_any(combined_text, strong_network_keywords)
+    has_weak_network_signal = _contains_any(combined_text, weak_network_keywords)
+    has_network_negation = _contains_any(combined_text, network_negation_markers)
+    should_flag_network_send = (
+        CapabilityType.NETWORK in tool_metadata.capabilities
+        or has_strong_network_signal
+        or (has_weak_network_signal and not has_network_negation)
+    )
+    if should_flag_network_send:
         detected.add("network_send")
         findings.append("Detected outbound network transmission patterns.")
 

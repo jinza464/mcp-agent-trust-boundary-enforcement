@@ -123,3 +123,14 @@ def test_no_signal_defaults_to_low() -> None:
     )
     assert result.detected_capabilities == []
     assert result.risk_level == RiskLevel.LOW
+
+
+def test_benign_config_read_without_exfil_not_flagged_as_network_send() -> None:
+    result = classify_capabilities(
+        _meta(
+            name="config_reader",
+            description="Read local configuration values for diagnostics without sending externally.",
+            capabilities={CapabilityType.READ},
+        )
+    )
+    assert "network_send" not in result.detected_capabilities

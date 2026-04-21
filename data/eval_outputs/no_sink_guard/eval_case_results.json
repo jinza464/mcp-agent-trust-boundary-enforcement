@@ -70,8 +70,8 @@
     "involves_sink": true,
     "detected_risk_level": "critical",
     "decision_action": "deny",
-    "sink_action": "deny",
-    "matched_expectation": true,
+    "sink_action": null,
+    "matched_expectation": false,
     "reasons": [
       "Hard-block rule triggered by critical capability pattern."
     ],
@@ -81,8 +81,7 @@
       "Detected outbound network transmission patterns.",
       "Read capability includes secret-oriented signals; treat as sensitive read path.",
       "Source trust label: trusted.",
-      "Detected network send sink.",
-      "Sensitive secret/token/password content detected in outbound payload."
+      "ablation:disable_sink_guard (sink checks skipped)"
     ]
   },
   {
@@ -175,8 +174,8 @@
     "involves_sink": true,
     "detected_risk_level": "critical",
     "decision_action": "deny",
-    "sink_action": "deny",
-    "matched_expectation": true,
+    "sink_action": null,
+    "matched_expectation": false,
     "reasons": [
       "Hard-block rule triggered by critical capability pattern."
     ],
@@ -186,8 +185,7 @@
       "Detected outbound network transmission patterns.",
       "Read capability includes secret-oriented signals; treat as sensitive read path.",
       "Source trust label: trusted.",
-      "Detected network send sink.",
-      "Sensitive secret/token/password content detected in outbound payload."
+      "ablation:disable_sink_guard (sink checks skipped)"
     ]
   },
   {
@@ -260,8 +258,8 @@
     "involves_sink": true,
     "detected_risk_level": "high",
     "decision_action": "require_confirmation",
-    "sink_action": "allow",
-    "matched_expectation": true,
+    "sink_action": null,
+    "matched_expectation": false,
     "reasons": [
       "High aggregate risk requires explicit user confirmation."
     ],
@@ -269,7 +267,7 @@
       "Detected file write/modify semantics from capability or text patterns.",
       "Detected state-changing behavior (create/update/delete/execute).",
       "Source trust label: trusted.",
-      "Detected file write sink."
+      "ablation:disable_sink_guard (sink checks skipped)"
     ]
   },
   {
@@ -334,16 +332,15 @@
     "involves_sink": true,
     "detected_risk_level": "medium",
     "decision_action": "allow",
-    "sink_action": "require_confirmation",
-    "matched_expectation": true,
+    "sink_action": null,
+    "matched_expectation": false,
     "reasons": [
       "No blocking risk signal detected under current policy rules."
     ],
     "findings": [
       "Detected state-changing behavior (create/update/delete/execute).",
       "Source trust label: trusted.",
-      "Detected state-changing sink.",
-      "State-changing operation requires explicit user confirmation."
+      "ablation:disable_sink_guard (sink checks skipped)"
     ]
   },
   {
@@ -354,8 +351,8 @@
     "involves_sink": true,
     "detected_risk_level": "high",
     "decision_action": "require_confirmation",
-    "sink_action": "require_confirmation",
-    "matched_expectation": true,
+    "sink_action": null,
+    "matched_expectation": false,
     "reasons": [
       "High aggregate risk requires explicit user confirmation."
     ],
@@ -363,8 +360,7 @@
       "Detected read/list/query behavior from capability or text patterns.",
       "Detected outbound network transmission patterns.",
       "Source trust label: trusted.",
-      "Detected network send sink.",
-      "Outbound traffic to webhook/external endpoint requires confirmation."
+      "ablation:disable_sink_guard (sink checks skipped)"
     ]
   },
   {
@@ -375,15 +371,15 @@
     "involves_sink": true,
     "detected_risk_level": "low",
     "decision_action": "allow",
-    "sink_action": "allow",
-    "matched_expectation": true,
+    "sink_action": null,
+    "matched_expectation": false,
     "reasons": [
       "No blocking risk signal detected under current policy rules."
     ],
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
       "Source trust label: trusted.",
-      "Detected network send sink."
+      "ablation:disable_sink_guard (sink checks skipped)"
     ]
   },
   {
@@ -451,16 +447,15 @@
     "involves_sink": true,
     "detected_risk_level": "medium",
     "decision_action": "allow",
-    "sink_action": "require_confirmation",
-    "matched_expectation": true,
+    "sink_action": null,
+    "matched_expectation": false,
     "reasons": [
       "No blocking risk signal detected under current policy rules."
     ],
     "findings": [
       "Detected state-changing behavior (create/update/delete/execute).",
       "Source trust label: trusted.",
-      "Detected state-changing sink.",
-      "State-changing operation requires explicit user confirmation."
+      "ablation:disable_sink_guard (sink checks skipped)"
     ]
   },
   {
@@ -471,8 +466,8 @@
     "involves_sink": true,
     "detected_risk_level": "high",
     "decision_action": "require_confirmation",
-    "sink_action": "require_confirmation",
-    "matched_expectation": true,
+    "sink_action": null,
+    "matched_expectation": false,
     "reasons": [
       "High aggregate risk requires explicit user confirmation."
     ],
@@ -480,8 +475,7 @@
       "Detected read/list/query behavior from capability or text patterns.",
       "Detected outbound network transmission patterns.",
       "Source trust label: trusted.",
-      "Detected network send sink.",
-      "Outbound traffic to webhook/external endpoint requires confirmation."
+      "ablation:disable_sink_guard (sink checks skipped)"
     ]
   },
   {

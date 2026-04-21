@@ -16,7 +16,8 @@
       "Detected read/list/query behavior from capability or text patterns.",
       "Description hash changed from previous snapshot.",
       "Prompt-like instruction detected in tool description.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -35,7 +36,8 @@
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
       "Shadowing risk: same tool name appears from a different server origin.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -59,7 +61,8 @@
       "Schema hash changed from previous snapshot.",
       "New high-risk capabilities introduced: file_write.",
       "Version rollback detected: 2.3.0 -> 1.0.0.",
-      "Source trust label: semi_trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -82,7 +85,8 @@
       "Read capability includes secret-oriented signals; treat as sensitive read path.",
       "Source trust label: trusted.",
       "Detected network send sink.",
-      "Sensitive secret/token/password content detected in outbound payload."
+      "Sensitive secret/token/password content detected in outbound payload.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -101,7 +105,8 @@
     "findings": [
       "Detected state-changing behavior (create/update/delete/execute).",
       "Detected hidden/background invocation risk patterns.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -121,7 +126,8 @@
       "Detected read/list/query behavior from capability or text patterns.",
       "Description hash changed from previous snapshot.",
       "Prompt-like instruction detected in tool description.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -145,7 +151,8 @@
       "Schema hash changed from previous snapshot.",
       "New high-risk capabilities introduced: hidden_invocation.",
       "Version rollback detected: 3.4.0 -> 2.0.0.",
-      "Source trust label: untrusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -164,7 +171,8 @@
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
       "Shadowing risk: same tool name appears from a different server origin.",
-      "Source trust label: semi_trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -187,7 +195,8 @@
       "Read capability includes secret-oriented signals; treat as sensitive read path.",
       "Source trust label: trusted.",
       "Detected network send sink.",
-      "Sensitive secret/token/password content detected in outbound payload."
+      "Sensitive secret/token/password content detected in outbound payload.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -209,7 +218,8 @@
       "Description hash changed from previous snapshot.",
       "Prompt-like instruction detected in tool description.",
       "New high-risk capabilities introduced: hidden_invocation.",
-      "Source trust label: untrusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -231,7 +241,8 @@
       "Description hash changed from previous snapshot.",
       "Prompt-like instruction detected in tool description.",
       "New high-risk capabilities introduced: hidden_invocation.",
-      "Source trust label: untrusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -249,7 +260,8 @@
     ],
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -269,7 +281,8 @@
       "Detected file write/modify semantics from capability or text patterns.",
       "Detected state-changing behavior (create/update/delete/execute).",
       "Source trust label: trusted.",
-      "Detected file write sink."
+      "Detected file write sink.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -287,7 +300,8 @@
     ],
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -305,7 +319,8 @@
     ],
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -314,16 +329,17 @@
     "is_attack": false,
     "is_benign": true,
     "involves_sink": false,
-    "detected_risk_level": "medium",
+    "detected_risk_level": "low",
     "decision_action": "allow",
     "sink_action": null,
-    "matched_expectation": true,
+    "matched_expectation": false,
     "reasons": [
       "No blocking risk signal detected under current policy rules."
     ],
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
-      "Source trust label: semi_trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -343,7 +359,8 @@
       "Detected state-changing behavior (create/update/delete/execute).",
       "Source trust label: trusted.",
       "Detected state-changing sink.",
-      "State-changing operation requires explicit user confirmation."
+      "State-changing operation requires explicit user confirmation.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -364,7 +381,8 @@
       "Detected outbound network transmission patterns.",
       "Source trust label: trusted.",
       "Detected network send sink.",
-      "Outbound traffic to webhook/external endpoint requires confirmation."
+      "Outbound traffic to webhook/external endpoint requires confirmation.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -383,7 +401,8 @@
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
       "Source trust label: trusted.",
-      "Detected network send sink."
+      "Detected network send sink.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -402,7 +421,8 @@
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
       "Description hash changed from previous snapshot.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -411,17 +431,18 @@
     "is_attack": true,
     "is_benign": false,
     "involves_sink": false,
-    "detected_risk_level": "high",
-    "decision_action": "escalate",
+    "detected_risk_level": "medium",
+    "decision_action": "allow",
     "sink_action": null,
-    "matched_expectation": true,
+    "matched_expectation": false,
     "reasons": [
-      "Untrusted source combined with non-low risk requires escalation."
+      "No blocking risk signal detected under current policy rules."
     ],
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
       "Description hash changed from previous snapshot.",
-      "Source trust label: untrusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -440,7 +461,8 @@
     "findings": [
       "Detected state-changing behavior (create/update/delete/execute).",
       "Detected hidden/background invocation risk patterns.",
-      "Source trust label: trusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -460,7 +482,8 @@
       "Detected state-changing behavior (create/update/delete/execute).",
       "Source trust label: trusted.",
       "Detected state-changing sink.",
-      "State-changing operation requires explicit user confirmation."
+      "State-changing operation requires explicit user confirmation.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -481,7 +504,8 @@
       "Detected outbound network transmission patterns.",
       "Source trust label: trusted.",
       "Detected network send sink.",
-      "Outbound traffic to webhook/external endpoint requires confirmation."
+      "Outbound traffic to webhook/external endpoint requires confirmation.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   },
   {
@@ -490,17 +514,18 @@
     "is_attack": true,
     "is_benign": false,
     "involves_sink": false,
-    "detected_risk_level": "high",
-    "decision_action": "escalate",
+    "detected_risk_level": "medium",
+    "decision_action": "allow",
     "sink_action": null,
-    "matched_expectation": true,
+    "matched_expectation": false,
     "reasons": [
-      "Untrusted source combined with non-low risk requires escalation."
+      "No blocking risk signal detected under current policy rules."
     ],
     "findings": [
       "Detected read/list/query behavior from capability or text patterns.",
       "Description hash changed from previous snapshot.",
-      "Source trust label: untrusted."
+      "Source trust label: trusted.",
+      "ablation:disable_trust_tagging (source trust fixed to trusted)"
     ]
   }
 ]

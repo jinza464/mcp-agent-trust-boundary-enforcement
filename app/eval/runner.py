@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from app.core.models import DecisionAction, RiskLevel
+from app.core.models import DecisionAction, RiskLevel, TrustLabel
 from app.decision.decision_engine import DecisionContext, decide
 from app.eval.attack_cases import EvalAttackCase, default_attack_cases
 from app.policy.capability_policy import classify_capabilities
@@ -31,11 +31,67 @@ class EvalCaseResult(BaseModel):
     findings: list[str] = Field(default_factory=list, description="Combined findings from pipeline.")
 
 
-def run_case(case: EvalAttackCase) -> EvalCaseResult:
+class AblationConfig(BaseModel):
+    """Ablation switches for selectively disabling trust-boundary modules."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    disable_trust_tagging: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("disable_trust_tagging", "no_trust_tagging"),
+    )
+    disable_metadata_validation: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("disable_metadata_validation", "no_metadata_validation"),
+    )
+    disable_sink_guard: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("disable_sink_guard", "no_sink_guard"),
+    )
+
+    @property
+    def no_trust_tagging(self) -> bool:
+        """Backward-compatible alias."""
+        return self.disable_trust_tagging
+
+    @property
+    def no_metadata_validation(self) -> bool:
+        """Backward-compatible alias."""
+        return self.disable_metadata_validation
+
+    @property
+    def no_sink_guard(self) -> bool:
+        """Backward-compatible alias."""
+        return self.disable_sink_guard
+
+
+def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None = None) -> EvalCaseResult:
     """Execute one attack case through the minimal local security evaluation loop."""
-    source_trust = tag_source(case.source_type, case.source_content, metadata=case.source_metadata)
+    cfg = (
+        ablation_config
+        if isinstance(ablation_config, AblationConfig)
+        else AblationConfig.model_validate(ablation_config or {})
+    )
+
+    ablation_notes: list[str] = []
+
+    source_trust = (
+        TrustLabel.TRUSTED
+        if cfg.disable_trust_tagging
+        else tag_source(case.source_type, case.source_content, metadata=case.source_metadata)
+    )
+    if cfg.disable_trust_tagging:
+        ablation_notes.append("ablation:disable_trust_tagging (source trust fixed to trusted)")
     capability_result = classify_capabilities(case.tool_metadata)
-    metadata_result = validate_metadata(case.old_snapshot, case.tool_metadata) if case.old_snapshot else None
+    metadata_result = (
+        None
+        if cfg.disable_metadata_validation
+        else (validate_metadata(case.old_snapshot, case.tool_metadata) if case.old_snapshot else None)
+    )
+    if cfg.disable_metadata_validation:
+        ablation_notes.append("ablation:disable_metadata_validation (metadata checks skipped)")
+
+    old_snapshot_for_decision = None if cfg.disable_metadata_validation else case.old_snapshot
 
     decision_result = decide(
         DecisionContext(
@@ -46,13 +102,13 @@ def run_case(case: EvalAttackCase) -> EvalCaseResult:
             source_metadata=case.source_metadata,
             capability_result=capability_result,
             metadata_validation_result=metadata_result,
-            old_snapshot=case.old_snapshot,
+            old_snapshot=old_snapshot_for_decision,
         )
     )
 
     sink_action: DecisionAction | None = None
     sink_findings: list[str] = []
-    if case.sink_plan is not None:
+    if case.sink_plan is not None and not cfg.disable_sink_guard:
         sink_result = inspect_sink(
             planned_action=case.sink_plan.planned_action,
             payload=case.sink_plan.payload,
@@ -60,6 +116,8 @@ def run_case(case: EvalAttackCase) -> EvalCaseResult:
         )
         sink_action = sink_result.action
         sink_findings = sink_result.findings + sink_result.blocked_reasons
+    elif case.sink_plan is not None and cfg.disable_sink_guard:
+        ablation_notes.append("ablation:disable_sink_guard (sink checks skipped)")
 
     matched = (
         decision_result.action == case.expected_action
@@ -78,11 +136,14 @@ def run_case(case: EvalAttackCase) -> EvalCaseResult:
         sink_action=sink_action,
         matched_expectation=matched,
         reasons=decision_result.reasons,
-        findings=decision_result.findings + sink_findings,
+        findings=decision_result.findings + sink_findings + ablation_notes,
     )
 
 
-def run_all_cases(cases: list[EvalAttackCase] | None = None) -> list[EvalCaseResult]:
+def run_all_cases(
+    cases: list[EvalAttackCase] | None = None,
+    ablation_config: AblationConfig | dict | None = None,
+) -> list[EvalCaseResult]:
     """Execute all provided cases, or built-in defaults when omitted."""
     selected = cases or default_attack_cases()
-    return [run_case(case) for case in selected]
+    return [run_case(case, ablation_config=ablation_config) for case in selected]
