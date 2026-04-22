@@ -54,6 +54,10 @@ class EvalSummary(BaseModel):
         ...,
         description="Prototype operational metric: fraction of cases directly hard-blocked (decision/sink DENY).",
     )
+    confirmation_rate: float = Field(
+        ...,
+        description="Prototype operational metric: fraction of cases that enter confirmation gate.",
+    )
 
 
 def _inc(counter: dict[str, int], key: str) -> None:
@@ -82,6 +86,13 @@ def _fallback_degraded(item: EvalCaseResult) -> bool:
 
 def _fallback_hard_block(item: EvalCaseResult) -> bool:
     return item.decision_action == DecisionAction.DENY or item.sink_action == DecisionAction.DENY
+
+
+def _fallback_confirmation(item: EvalCaseResult) -> bool:
+    return (
+        item.decision_action == DecisionAction.REQUIRE_CONFIRMATION
+        or item.sink_action == DecisionAction.REQUIRE_CONFIRMATION
+    )
 
 
 def summarize_results(results: list[EvalCaseResult]) -> EvalSummary:
@@ -132,6 +143,7 @@ def summarize_results(results: list[EvalCaseResult]) -> EvalSummary:
     completion_count = sum(1 for item in results if completed(item))
     intervention_count = sum(1 for item in results if intervention(item))
     hard_block_count = sum(1 for item in results if _fallback_hard_block(item))
+    confirmation_count = sum(1 for item in results if _fallback_confirmation(item))
 
     attack_success_rate = (attack_success_count / len(attack_cases)) if attack_cases else 0.0
     leak_rate = (leak_count / len(sink_cases)) if sink_cases else 0.0
@@ -141,6 +153,7 @@ def summarize_results(results: list[EvalCaseResult]) -> EvalSummary:
     execution_completion_rate = (completion_count / total_cases) if total_cases else 0.0
     intervention_rate = (intervention_count / total_cases) if total_cases else 0.0
     hard_block_rate = (hard_block_count / total_cases) if total_cases else 0.0
+    confirmation_rate = (confirmation_count / total_cases) if total_cases else 0.0
 
     return EvalSummary(
         total_cases=total_cases,
@@ -157,6 +170,7 @@ def summarize_results(results: list[EvalCaseResult]) -> EvalSummary:
         execution_completion_rate=execution_completion_rate,
         intervention_rate=intervention_rate,
         hard_block_rate=hard_block_rate,
+        confirmation_rate=confirmation_rate,
     )
 
 

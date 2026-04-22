@@ -46,18 +46,28 @@ def test_external_callback_telemetry_requires_confirmation() -> None:
     assert result.action == DecisionAction.REQUIRE_CONFIRMATION
     assert result.requires_user_confirmation is True
     assert result.endpoint_class == "external"
-    assert result.payload_sensitivity_class == "low_sensitivity"
+    assert result.payload_sensitivity_class == "low"
+    assert result.fragment_suspicion is False
+    assert "external_endpoint" in result.staged_exfil_signals
+    assert "external_callback_channel" in result.staged_exfil_signals
 
 
 def test_trusted_internal_sync_allowed() -> None:
     result = inspect_sink(
         planned_action="network_send",
         payload={"event": "sync_complete", "records": 12},
-        metadata={"endpoint": "https://sync.internal.corp/v1/push", "sink_type": "network_send"},
+        metadata={
+            "endpoint": "https://sync.internal.corp/v1/push",
+            "sink_type": "network_send",
+            "integrity_verified": True,
+            "signature_valid": True,
+        },
     )
     assert result.action == DecisionAction.ALLOW
     assert result.endpoint_class == "internal"
-    assert result.payload_sensitivity_class == "low_sensitivity"
+    assert result.payload_sensitivity_class == "low"
+    assert result.fragment_suspicion is False
+    assert "internal_endpoint" in result.staged_exfil_signals
 
 
 def test_fragmented_leakage_denied() -> None:
@@ -75,6 +85,9 @@ def test_fragmented_leakage_denied() -> None:
     assert result.risk_level == RiskLevel.CRITICAL
     assert "fragmented_payload_marker" in result.sensitive_payload_signals or "staged_transfer_marker" in result.sensitive_payload_signals
     assert result.fragment_suspicion is True
+    assert result.payload_sensitivity_class == "suspicious"
+    assert "external_endpoint" in result.staged_exfil_signals
+    assert "external_callback_channel" in result.staged_exfil_signals
 
 
 def test_staged_exfiltration_denied() -> None:
@@ -91,6 +104,8 @@ def test_staged_exfiltration_denied() -> None:
     assert result.risk_level == RiskLevel.CRITICAL
     assert "staged_transfer_marker" in result.sensitive_payload_signals
     assert "external_callback_channel" in result.staged_exfil_signals
+    assert "low_obviousness_payload" in result.staged_exfil_signals
+    assert result.payload_sensitivity_class == "suspicious"
 
 
 def test_obfuscated_exfiltration_denied() -> None:
@@ -119,7 +134,8 @@ def test_allowlisted_callback_telemetry_allowed() -> None:
     )
     assert result.action == DecisionAction.ALLOW
     assert result.endpoint_class == "allowlisted"
-    assert result.payload_sensitivity_class == "low_sensitivity"
+    assert result.payload_sensitivity_class == "low"
+    assert "allowlisted_endpoint" in result.staged_exfil_signals
 
 
 def test_sensitive_config_write_requires_confirmation() -> None:
@@ -140,6 +156,8 @@ def test_write_report_file_allow() -> None:
     )
     assert result.action == DecisionAction.ALLOW
     assert result.risk_level == RiskLevel.LOW
+    assert result.payload_sensitivity_class == "low"
+    assert result.fragment_suspicion is False
 
 
 def test_credential_access_requires_confirmation() -> None:

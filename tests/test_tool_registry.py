@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -46,13 +47,19 @@ def test_same_name_same_origin_duplicate_observation() -> None:
     registry = ToolRegistry()
     metadata = _build_metadata()
 
-    registry.register_tool(metadata)
+    first = registry.register_tool(metadata)
     result = registry.register_tool(metadata)
 
+    track = registry.get_identity_track(metadata.tool_id, metadata.source_uri)
+    assert track is not None
+    assert first.first_seen_at == first.last_seen_at
     assert result.status == "registered_duplicate"
     assert result.observation_kind == "duplicate_observation"
     assert result.is_duplicate is True
     assert result.observation_count == 2
+    assert track.observation_count == 2
+    assert track.drift_history_summary["duplicate_observation_count"] == 1
+    assert track.drift_history_summary["last_observation_kind"] == "duplicate_observation"
 
 
 def test_same_name_different_origin_shadowing_detection() -> None:
@@ -142,10 +149,49 @@ def test_capability_drift_without_version_change_detection() -> None:
 
     new = _build_metadata(version="1.0.0", capabilities={CapabilityType.READ, CapabilityType.WRITE})
     result = registry.register_tool(new)
+    track = registry.get_identity_track(old.tool_id, old.source_uri)
+    assert track is not None
 
     assert result.status == "registered_suspicious_update"
     assert result.change_result is not None
     assert "suspicious_capability_drift" in result.change_result.change_categories
+    assert track.suspicious_update_count >= 1
+    assert track.drift_history_summary["suspicious_update_count"] >= 1
+
+
+def test_first_seen_last_seen_and_observation_count_progression() -> None:
+    registry = ToolRegistry()
+    metadata = _build_metadata()
+
+    first = registry.register_tool(metadata)
+    second = registry.register_tool(metadata)
+    track = registry.get_identity_track(metadata.tool_id, metadata.source_uri)
+
+    assert track is not None
+    assert first.first_seen_at == track.first_seen_at
+    assert second.first_seen_at == track.first_seen_at
+    assert second.last_seen_at >= first.last_seen_at
+    assert track.last_seen_at == second.last_seen_at
+    assert track.observation_count == 2
+
+
+def test_rollback_history_retention_and_summary() -> None:
+    registry = ToolRegistry()
+    baseline = _build_metadata(version="2.0.0")
+    rollback = _build_metadata(version="1.0.0")
+
+    registry.register_tool(baseline)
+    result = registry.register_tool(rollback)
+    track = registry.get_identity_track(baseline.tool_id, baseline.source_uri)
+
+    assert track is not None
+    assert result.status == "registered_suspicious_update"
+    assert result.change_result is not None
+    assert "rollback" in result.change_result.change_categories
+    assert track.observation_history[-1] == "suspicious_update"
+    assert track.suspicious_update_count >= 1
+    assert track.drift_history_summary["suspicious_update_count"] >= 1
+    assert "rollback" in track.drift_history_summary["recent_change_categories"]
 
 
 def test_save_and_load_json_roundtrip() -> None:
@@ -162,6 +208,40 @@ def test_save_and_load_json_roundtrip() -> None:
         snapshot = loaded.get_tool_snapshot("search", "https://server-a.mcp.local")
         assert snapshot is not None
         assert snapshot.tool.name == "search"
+    finally:
+        if file_path.exists():
+            file_path.unlink()
+
+
+def test_load_tracks_json_without_new_audit_fields_compatibility() -> None:
+    registry = ToolRegistry()
+    metadata = _build_metadata()
+    registry.register_tool(metadata)
+    registry.register_tool(metadata)
+
+    track = registry.get_identity_track(metadata.tool_id, metadata.source_uri)
+    assert track is not None
+
+    legacy_track_payload = track.model_dump(mode="json")
+    legacy_track_payload.pop("suspicious_update_count", None)
+    legacy_track_payload.pop("drift_history_summary", None)
+
+    test_data_dir = Path("data") / "test_outputs"
+    test_data_dir.mkdir(parents=True, exist_ok=True)
+    file_path = test_data_dir / f"tool-registry-legacy-track-{uuid4().hex}.json"
+    try:
+        payload = {
+            "tracks_by_identity_origin": {
+                f"{metadata.tool_id}::{metadata.source_uri}": legacy_track_payload,
+            }
+        }
+        file_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        loaded = ToolRegistry.load_from_json(file_path)
+        loaded_track = loaded.get_identity_track(metadata.tool_id, metadata.source_uri)
+        assert loaded_track is not None
+        assert loaded_track.observation_count == 2
+        assert "duplicate_observation_count" in loaded_track.drift_history_summary
+        assert "suspicious_update_count" in loaded_track.drift_history_summary
     finally:
         if file_path.exists():
             file_path.unlink()

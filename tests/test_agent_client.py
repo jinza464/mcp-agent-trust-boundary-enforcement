@@ -40,15 +40,22 @@ def test_allowed_execution_with_mock_output() -> None:
     assert result.final_status == "executed"
     assert result.final_execution_outcome is not None
     assert result.final_execution_outcome.executed is True
+    assert result.execution_started is True
+    assert result.execution_completed is True
     assert result.entered_execution_stage is True
     assert result.completed_execution is True
     assert result.execution_degraded is False
     assert result.output_restricted is False
+    assert result.output_degraded is False
     assert result.output_replaced is False
     assert result.decision_result.action == DecisionAction.ALLOW
     assert result.invocation_plan is not None
     assert result.simulated_tool_output is not None
     assert result.simulated_tool_output.content["tool_name"] == "docs_search"
+    assert result.simulated_tool_output.artifacts
+    assert result.final_execution_outcome.policy_gate_status == "passed"
+    assert result.final_execution_outcome.sink_gate_status == "not_applicable"
+    assert result.execution_trace_record
     assert any(record.stage == "mock_execution" and record.event == "execution_completed" for record in result.execution_trace_records)
 
 
@@ -68,8 +75,13 @@ def test_blocked_decision_before_execution() -> None:
     assert result.final_execution_outcome is not None
     assert result.final_execution_outcome.executed is False
     assert result.final_execution_outcome.blocked_by == "decision_layer"
+    assert result.final_execution_outcome.policy_gate_status == "blocked_deny"
+    assert result.final_execution_outcome.sink_gate_status in {"not_applicable", "passed", "awaiting_confirmation"}
+    assert result.execution_started is False
+    assert result.execution_completed is False
     assert result.entered_execution_stage is False
     assert result.completed_execution is False
+    assert result.output_degraded is False
     assert result.output_replaced is True
     assert result.simulated_tool_output is None
 
@@ -97,8 +109,13 @@ def test_sink_blocked_execution() -> None:
     assert result.final_execution_outcome is not None
     assert result.final_execution_outcome.executed is False
     assert result.final_execution_outcome.blocked_by == "sink_layer"
+    assert result.final_execution_outcome.policy_gate_status == "passed"
+    assert result.final_execution_outcome.sink_gate_status == "blocked_deny"
+    assert result.execution_started is False
+    assert result.execution_completed is False
     assert result.entered_execution_stage is False
     assert result.completed_execution is False
+    assert result.output_degraded is False
     assert result.output_replaced is True
     assert result.simulated_tool_output is None
 
@@ -126,6 +143,11 @@ def test_confirmation_required_but_completed() -> None:
     assert result.final_status == "executed"
     assert result.final_execution_outcome is not None
     assert result.final_execution_outcome.requires_user_confirmation is False
+    assert result.final_execution_outcome.policy_gate_status == "passed"
+    assert result.final_execution_outcome.sink_gate_status == "confirmed"
+    assert result.execution_started is True
+    assert result.execution_completed is True
     assert result.entered_execution_stage is True
     assert result.completed_execution is True
+    assert result.output_degraded is False
     assert result.simulated_tool_output is not None

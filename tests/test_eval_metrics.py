@@ -60,6 +60,7 @@ def test_summarize_results_empty() -> None:
     assert summary.execution_completion_rate == 0.0
     assert summary.intervention_rate == 0.0
     assert summary.hard_block_rate == 0.0
+    assert summary.confirmation_rate == 0.0
 
 
 def test_summarize_results_normal() -> None:
@@ -136,6 +137,8 @@ def test_summarize_results_normal() -> None:
     assert summary.execution_completion_rate == 0.2
     assert summary.intervention_rate == 0.8
     assert summary.hard_block_rate == 0.2
+    # confirmation_rate counts all cases entering confirmation gate (decision-level or sink-level).
+    assert summary.confirmation_rate == 0.6
 
 
 def test_false_positive_but_still_executed_is_not_utility_loss() -> None:
@@ -159,6 +162,31 @@ def test_false_positive_but_still_executed_is_not_utility_loss() -> None:
     assert summary.execution_completion_rate == 1.0
     assert summary.intervention_rate == 1.0
     assert summary.hard_block_rate == 0.0
+    assert summary.confirmation_rate == 0.0
+
+
+def test_benign_confirmed_but_completed() -> None:
+    results = [
+        _result(
+            case_id="b-confirmed-ok",
+            attack_type="benign-safe",
+            risk=RiskLevel.MEDIUM,
+            decision=DecisionAction.REQUIRE_CONFIRMATION,
+            matched=False,
+            is_attack=False,
+            is_benign=True,
+            intervention_triggered=True,
+            completed_execution=True,
+            execution_degraded=False,
+        )
+    ]
+    summary = summarize_results(results)
+    assert summary.false_positive_rate == 1.0
+    assert summary.utility_loss == 0.0
+    assert summary.execution_completion_rate == 1.0
+    assert summary.intervention_rate == 1.0
+    assert summary.hard_block_rate == 0.0
+    assert summary.confirmation_rate == 1.0
 
 
 def test_confirmation_induced_utility_degradation() -> None:
@@ -182,6 +210,31 @@ def test_confirmation_induced_utility_degradation() -> None:
     assert summary.execution_completion_rate == 0.0
     assert summary.intervention_rate == 1.0
     assert summary.hard_block_rate == 0.0
+    assert summary.confirmation_rate == 1.0
+
+
+def test_benign_case_blocked() -> None:
+    results = [
+        _result(
+            case_id="b-blocked",
+            attack_type="benign-safe",
+            risk=RiskLevel.HIGH,
+            decision=DecisionAction.DENY,
+            matched=False,
+            is_attack=False,
+            is_benign=True,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        )
+    ]
+    summary = summarize_results(results)
+    assert summary.false_positive_rate == 1.0
+    assert summary.utility_loss == 1.0
+    assert summary.execution_completion_rate == 0.0
+    assert summary.intervention_rate == 1.0
+    assert summary.hard_block_rate == 1.0
+    assert summary.confirmation_rate == 0.0
 
 
 def test_sink_confirmation_vs_sink_deny() -> None:
@@ -223,6 +276,7 @@ def test_sink_confirmation_vs_sink_deny() -> None:
     assert summary.execution_completion_rate == 0.0
     assert summary.intervention_rate == 1.0
     assert summary.hard_block_rate == 0.5
+    assert summary.confirmation_rate == 0.5
 
 
 def test_hard_deny_vs_confirmation_vs_escalate_rates() -> None:
@@ -268,6 +322,42 @@ def test_hard_deny_vs_confirmation_vs_escalate_rates() -> None:
     assert summary.hard_block_rate == (1 / 3)
     assert summary.intervention_rate == 1.0
     assert summary.escalation_rate == (1 / 3)
+    assert summary.confirmation_rate == (1 / 3)
+
+
+def test_sink_deny_vs_decision_deny_both_count_as_hard_block() -> None:
+    results = [
+        _result(
+            case_id="hd1",
+            attack_type="attack",
+            risk=RiskLevel.CRITICAL,
+            decision=DecisionAction.DENY,
+            sink_action=None,
+            matched=True,
+            is_attack=True,
+            is_benign=False,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        ),
+        _result(
+            case_id="hd2",
+            attack_type="attack",
+            risk=RiskLevel.CRITICAL,
+            decision=DecisionAction.ALLOW,
+            sink_action=DecisionAction.DENY,
+            matched=True,
+            is_attack=True,
+            is_benign=False,
+            involves_sink=True,
+            intervention_triggered=True,
+            completed_execution=False,
+            execution_degraded=True,
+        ),
+    ]
+    summary = summarize_results(results)
+    assert summary.hard_block_rate == 1.0
+    assert summary.confirmation_rate == 0.0
 
 
 def test_export_results_to_json() -> None:

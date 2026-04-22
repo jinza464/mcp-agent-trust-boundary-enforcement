@@ -105,6 +105,16 @@ class ToolIdentityTrack(BaseModel):
     first_seen_at: datetime
     last_seen_at: datetime
     observation_count: int
+    suspicious_update_count: int = 0
+    drift_history_summary: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "duplicate_observation_count": 0,
+            "benign_update_count": 0,
+            "suspicious_update_count": 0,
+            "recent_change_categories": [],
+            "last_observation_kind": ObservationKind.FIRST_OBSERVATION,
+        }
+    )
     snapshots: list[ToolSnapshot] = Field(default_factory=list)
     observation_history: list[str] = Field(default_factory=list)
 
@@ -197,6 +207,113 @@ class ToolRegistry:
     @staticmethod
     def _name_origin_key(tool_name: str, server_origin: str) -> str:
         return f"{tool_name}::{server_origin}"
+
+    @staticmethod
+    def _base_drift_history_summary() -> dict[str, Any]:
+        return {
+            "duplicate_observation_count": 0,
+            "benign_update_count": 0,
+            "suspicious_update_count": 0,
+            "recent_change_categories": [],
+            "last_observation_kind": ObservationKind.FIRST_OBSERVATION,
+        }
+
+    @classmethod
+    def _update_drift_history_summary(
+        cls,
+        summary: dict[str, Any] | None,
+        *,
+        observation_kind: str,
+        change_categories: list[str] | None = None,
+    ) -> dict[str, Any]:
+        base = dict(cls._base_drift_history_summary())
+        if isinstance(summary, dict):
+            base.update(summary)
+
+        base["duplicate_observation_count"] = int(base.get("duplicate_observation_count", 0))
+        base["benign_update_count"] = int(base.get("benign_update_count", 0))
+        base["suspicious_update_count"] = int(base.get("suspicious_update_count", 0))
+
+        if observation_kind == ObservationKind.DUPLICATE_OBSERVATION:
+            base["duplicate_observation_count"] += 1
+        elif observation_kind == ObservationKind.MEANINGFUL_UPDATE:
+            base["benign_update_count"] += 1
+        elif observation_kind == ObservationKind.SUSPICIOUS_UPDATE:
+            base["suspicious_update_count"] += 1
+
+        recent = list(base.get("recent_change_categories", [])) if isinstance(base.get("recent_change_categories"), list) else []
+        if change_categories:
+            recent.extend(change_categories)
+            recent = recent[-12:]
+        base["recent_change_categories"] = recent
+        base["last_observation_kind"] = observation_kind
+        return base
+
+    @classmethod
+    def _normalize_drift_history_summary(cls, summary: dict[str, Any] | None) -> dict[str, Any]:
+        base = dict(cls._base_drift_history_summary())
+        if isinstance(summary, dict):
+            base.update(summary)
+        base["duplicate_observation_count"] = max(0, int(base.get("duplicate_observation_count", 0)))
+        base["benign_update_count"] = max(0, int(base.get("benign_update_count", 0)))
+        base["suspicious_update_count"] = max(0, int(base.get("suspicious_update_count", 0)))
+        recent = base.get("recent_change_categories", [])
+        if not isinstance(recent, list):
+            recent = []
+        base["recent_change_categories"] = [str(item) for item in recent][-12:]
+        base["last_observation_kind"] = str(base.get("last_observation_kind", ObservationKind.FIRST_OBSERVATION))
+        return base
+
+    @classmethod
+    def _rebuild_drift_history_summary(
+        cls,
+        observation_history: list[str],
+        snapshots: list[ToolSnapshot],
+    ) -> tuple[int, dict[str, Any]]:
+        summary = cls._base_drift_history_summary()
+        suspicious_count = 0
+        # Reconstruct from per-step observations and adjacent snapshot drift.
+        for idx, raw_kind in enumerate(observation_history):
+            kind = str(raw_kind)
+            categories: list[str] = []
+            if idx > 0 and idx < len(snapshots):
+                prev = snapshots[idx - 1]
+                curr = snapshots[idx]
+                if prev.tool and curr.tool:
+                    if prev.description_hash != curr.description_hash:
+                        categories.append(ChangeCategory.DESCRIPTIVE_CHANGE)
+                    if prev.input_schema_hash != curr.input_schema_hash or prev.output_schema_hash != curr.output_schema_hash:
+                        categories.append(ChangeCategory.SCHEMA_CHANGE)
+                    if prev.server_origin != curr.server_origin:
+                        categories.append(ChangeCategory.SERVER_RELOCATION)
+                    old_semver = cls._parse_semver(prev.observed_version or prev.tool.version)
+                    new_semver = cls._parse_semver(curr.observed_version or curr.tool.version)
+                    if old_semver and new_semver and new_semver < old_semver:
+                        categories.append(ChangeCategory.ROLLBACK)
+            summary = cls._update_drift_history_summary(
+                summary,
+                observation_kind=kind,
+                change_categories=categories,
+            )
+            if kind == ObservationKind.SUSPICIOUS_UPDATE:
+                suspicious_count += 1
+        return suspicious_count, summary
+
+    def _append_observation_history(
+        self,
+        track: ToolIdentityTrack,
+        *,
+        observation_kind: str,
+        change_categories: list[str] | None = None,
+    ) -> None:
+        track.observation_history.append(observation_kind)
+        track.drift_history_summary = self._update_drift_history_summary(
+            track.drift_history_summary,
+            observation_kind=observation_kind,
+            change_categories=change_categories,
+        )
+        if observation_kind == ObservationKind.SUSPICIOUS_UPDATE:
+            track.suspicious_update_count += 1
 
     @classmethod
     def _build_snapshot(cls, metadata: ToolMetadata) -> ToolSnapshot:
@@ -351,6 +468,8 @@ class ToolRegistry:
 
         if track is None:
             conflict = self._detect_namespace_conflict_global(metadata)
+            first_observation_kind = ObservationKind.SUSPICIOUS_UPDATE if conflict else ObservationKind.FIRST_OBSERVATION
+            initial_categories = [ChangeCategory.NAMESPACE_CONFLICT] if conflict else []
             track = ToolIdentityTrack(
                 tool_identity=tool_identity,
                 tool_name=metadata.name,
@@ -360,10 +479,14 @@ class ToolRegistry:
                 first_seen_at=now,
                 last_seen_at=now,
                 observation_count=1,
+                suspicious_update_count=1 if conflict else 0,
+                drift_history_summary=self._update_drift_history_summary(
+                    None,
+                    observation_kind=first_observation_kind,
+                    change_categories=initial_categories,
+                ),
                 snapshots=[new_snapshot],
-                observation_history=[
-                    ObservationKind.SUSPICIOUS_UPDATE if conflict else ObservationKind.FIRST_OBSERVATION
-                ],
+                observation_history=[first_observation_kind],
             )
             self._tracks_by_identity_origin[track_key] = track
 
@@ -432,7 +555,11 @@ class ToolRegistry:
             status = "registered_update"
             is_duplicate = False
 
-        track.observation_history.append(observation_kind)
+        self._append_observation_history(
+            track,
+            observation_kind=observation_kind,
+            change_categories=change_result.change_categories if change_result else [],
+        )
 
         return RegisterToolResult(
             status=status,
@@ -487,7 +614,38 @@ class ToolRegistry:
 
         if "tracks_by_identity_origin" in payload:
             for key, raw_track in payload.get("tracks_by_identity_origin", {}).items():
-                registry._tracks_by_identity_origin[key] = ToolIdentityTrack.model_validate(raw_track)
+                track = ToolIdentityTrack.model_validate(raw_track)
+                rebuilt_count, rebuilt_summary = cls._rebuild_drift_history_summary(
+                    track.observation_history,
+                    track.snapshots,
+                )
+                if not track.drift_history_summary:
+                    track.drift_history_summary = rebuilt_summary
+                else:
+                    normalized = cls._normalize_drift_history_summary(track.drift_history_summary)
+                    normalized["duplicate_observation_count"] = max(
+                        int(normalized.get("duplicate_observation_count", 0)),
+                        int(rebuilt_summary.get("duplicate_observation_count", 0)),
+                    )
+                    normalized["benign_update_count"] = max(
+                        int(normalized.get("benign_update_count", 0)),
+                        int(rebuilt_summary.get("benign_update_count", 0)),
+                    )
+                    normalized["suspicious_update_count"] = max(
+                        int(normalized.get("suspicious_update_count", 0)),
+                        int(rebuilt_summary.get("suspicious_update_count", 0)),
+                    )
+                    if not normalized.get("recent_change_categories"):
+                        normalized["recent_change_categories"] = rebuilt_summary.get("recent_change_categories", [])
+                    if track.observation_history:
+                        normalized["last_observation_kind"] = str(track.observation_history[-1])
+                    track.drift_history_summary = normalized
+                track.suspicious_update_count = max(
+                    int(track.suspicious_update_count),
+                    rebuilt_count,
+                    int(track.drift_history_summary.get("suspicious_update_count", 0)),
+                )
+                registry._tracks_by_identity_origin[key] = track
             return registry
 
         # Legacy compatibility loader for old format: {"snapshots_by_key": {"name::origin": [snapshots...]}}
@@ -508,10 +666,17 @@ class ToolRegistry:
                 first_seen_at=snapshots[0].captured_at,
                 last_seen_at=latest.captured_at,
                 observation_count=len(snapshots),
+                suspicious_update_count=0,
                 snapshots=snapshots,
                 observation_history=[ObservationKind.FIRST_OBSERVATION]
                 + [ObservationKind.MEANINGFUL_UPDATE] * (len(snapshots) - 1),
             )
+            rebuilt_count, rebuilt_summary = cls._rebuild_drift_history_summary(
+                track.observation_history,
+                track.snapshots,
+            )
+            track.suspicious_update_count = rebuilt_count
+            track.drift_history_summary = rebuilt_summary
             registry._tracks_by_identity_origin[track_key] = track
 
         return registry
