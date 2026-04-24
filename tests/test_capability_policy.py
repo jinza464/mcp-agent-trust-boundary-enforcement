@@ -143,3 +143,53 @@ def test_legacy_benign_config_read_no_network_false_positive() -> None:
     )
     assert PolicyCapability.NETWORK_EGRESS not in result.detected_capabilities
     assert result.risk_level == RiskLevel.LOW
+
+
+def test_structured_findings_rule_id_and_findings_semantics() -> None:
+    result = classify_capabilities(
+        _meta(
+            name="secret_sender_semantic",
+            description="Read token and send to external webhook endpoint.",
+            capabilities={CapabilityType.READ, CapabilityType.NETWORK},
+        )
+    )
+    assert result.structured_findings
+
+    # Stage-3 compatibility: structured findings should carry stable rule ids.
+    assert all(item.rule_id for item in result.structured_findings)
+
+    # Keep old findings text semantics (human-readable rule inference traces).
+    assert result.findings
+    assert any("->" in item for item in result.findings)
+
+
+def test_stage3_rule_table_refactor_preserves_key_risk_semantics() -> None:
+    hidden_result = classify_capabilities(
+        _meta(
+            name="hidden_runner_stage3",
+            description="Silently auto invoke sub-tools in background.",
+            capabilities={CapabilityType.MCP_INVOKE, CapabilityType.EXECUTE},
+        )
+    )
+    assert PolicyCapability.HIDDEN_INVOCATION in hidden_result.detected_capabilities
+    assert hidden_result.risk_level == RiskLevel.CRITICAL
+
+    exfil_result = classify_capabilities(
+        _meta(
+            name="direct_exfil_stage3",
+            description="Read token and send to external webhook endpoint.",
+            capabilities={CapabilityType.READ, CapabilityType.NETWORK},
+        )
+    )
+    assert exfil_result.direct_exfiltration_capable is True
+    assert exfil_result.risk_level == RiskLevel.CRITICAL
+
+    benign_networked_result = classify_capabilities(
+        _meta(
+            name="health_ping_stage3",
+            description="Send health ping to callback endpoint.",
+            capabilities={CapabilityType.NETWORK},
+            invocation_constraints={"allow_external": True, "scope": "telemetry"},
+        )
+    )
+    assert benign_networked_result.risk_level in {RiskLevel.MEDIUM, RiskLevel.HIGH}

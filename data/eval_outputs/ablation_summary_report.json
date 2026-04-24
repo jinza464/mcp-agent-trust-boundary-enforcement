@@ -4,27 +4,27 @@
     "disabled_modules": "none",
     "affected_cases_count": 0,
     "affected_cases_ratio": 0.0,
-    "match_rate": 0.7111111111111111,
-    "attack_success_rate": 0.1111111111111111,
-    "leak_rate": 0.29411764705882354,
-    "false_positive_rate": 0.3333333333333333,
-    "utility_loss": 0.3333333333333333,
-    "escalation_rate": 0.044444444444444446,
+    "match_rate": 0.660377358490566,
+    "attack_success_rate": 0.07407407407407407,
+    "leak_rate": 0.23809523809523808,
+    "false_positive_rate": 0.4230769230769231,
+    "utility_loss": 0.4230769230769231,
+    "escalation_rate": 0.03773584905660377,
     "affected_family_count": 6,
     "top_affected_family": "none",
     "affected_cases_by_family": {
       "metadata_drift_security": {
+        "total_cases": 15,
+        "affected_cases_count": 0,
+        "affected_cases_ratio": 0.0
+      },
+      "gray_zone_benign": {
         "total_cases": 12,
         "affected_cases_count": 0,
         "affected_cases_ratio": 0.0
       },
       "sink_exfiltration_security": {
-        "total_cases": 9,
-        "affected_cases_count": 0,
-        "affected_cases_ratio": 0.0
-      },
-      "gray_zone_benign": {
-        "total_cases": 8,
+        "total_cases": 10,
         "affected_cases_count": 0,
         "affected_cases_ratio": 0.0
       },
@@ -59,30 +59,30 @@
   {
     "configuration": "no_trust_tagging",
     "disabled_modules": "trust_tagging",
-    "affected_cases_count": 45,
+    "affected_cases_count": 53,
     "affected_cases_ratio": 1.0,
-    "match_rate": 0.6666666666666666,
-    "attack_success_rate": 0.14814814814814814,
-    "leak_rate": 0.29411764705882354,
-    "false_positive_rate": 0.3333333333333333,
-    "utility_loss": 0.3333333333333333,
+    "match_rate": 0.6226415094339622,
+    "attack_success_rate": 0.1111111111111111,
+    "leak_rate": 0.23809523809523808,
+    "false_positive_rate": 0.4230769230769231,
+    "utility_loss": 0.4230769230769231,
     "escalation_rate": 0.0,
     "affected_family_count": 6,
     "top_affected_family": "metadata_drift_security",
     "affected_cases_by_family": {
       "metadata_drift_security": {
+        "total_cases": 15,
+        "affected_cases_count": 15,
+        "affected_cases_ratio": 1.0
+      },
+      "gray_zone_benign": {
         "total_cases": 12,
         "affected_cases_count": 12,
         "affected_cases_ratio": 1.0
       },
       "sink_exfiltration_security": {
-        "total_cases": 9,
-        "affected_cases_count": 9,
-        "affected_cases_ratio": 1.0
-      },
-      "gray_zone_benign": {
-        "total_cases": 8,
-        "affected_cases_count": 8,
+        "total_cases": 10,
+        "affected_cases_count": 10,
         "affected_cases_ratio": 1.0
       },
       "benign_baseline": {
@@ -101,13 +101,13 @@
         "affected_cases_ratio": 1.0
       }
     },
-    "delta_match_rate": -0.04444444444444451,
+    "delta_match_rate": -0.037735849056603765,
     "delta_attack_success_rate": 0.037037037037037035,
     "delta_leak_rate": 0.0,
     "delta_false_positive_rate": 0.0,
     "delta_utility_loss": 0.0,
-    "delta_escalation_rate": -0.044444444444444446,
-    "dominant_changed_metric": "match_rate",
+    "delta_escalation_rate": -0.03773584905660377,
+    "dominant_changed_metric": "escalation_rate",
     "security_gain_interpretation": "Security degradation is attack-success dominated, suggesting upstream gating contribution loss.",
     "utility_cost_interpretation": "Utility profile remains close to baseline.",
     "explanation": "Ablation setting removes trust_tagging, isolating module-level contribution. Attack success increases relative to baseline, indicating reduced defensive interception. Overall benchmark agreement declines versus baseline. Most affected case family is metadata_drift_security, highlighting concentrated module impact.",
@@ -116,30 +116,30 @@
   {
     "configuration": "no_metadata_validation",
     "disabled_modules": "metadata_validation",
-    "affected_cases_count": 45,
+    "affected_cases_count": 53,
     "affected_cases_ratio": 1.0,
-    "match_rate": 0.4222222222222222,
-    "attack_success_rate": 0.4444444444444444,
-    "leak_rate": 0.29411764705882354,
-    "false_positive_rate": 0.2777777777777778,
-    "utility_loss": 0.2777777777777778,
-    "escalation_rate": 0.044444444444444446,
+    "match_rate": 0.3584905660377358,
+    "attack_success_rate": 0.4074074074074074,
+    "leak_rate": 0.23809523809523808,
+    "false_positive_rate": 0.3076923076923077,
+    "utility_loss": 0.3076923076923077,
+    "escalation_rate": 0.03773584905660377,
     "affected_family_count": 6,
     "top_affected_family": "metadata_drift_security",
     "affected_cases_by_family": {
       "metadata_drift_security": {
+        "total_cases": 15,
+        "affected_cases_count": 15,
+        "affected_cases_ratio": 1.0
+      },
+      "gray_zone_benign": {
         "total_cases": 12,
         "affected_cases_count": 12,
         "affected_cases_ratio": 1.0
       },
       "sink_exfiltration_security": {
-        "total_cases": 9,
-        "affected_cases_count": 9,
-        "affected_cases_ratio": 1.0
-      },
-      "gray_zone_benign": {
-        "total_cases": 8,
-        "affected_cases_count": 8,
+        "total_cases": 10,
+        "affected_cases_count": 10,
         "affected_cases_ratio": 1.0
       },
       "benign_baseline": {
@@ -158,11 +158,11 @@
         "affected_cases_ratio": 1.0
       }
     },
-    "delta_match_rate": -0.2888888888888889,
+    "delta_match_rate": -0.3018867924528302,
     "delta_attack_success_rate": 0.3333333333333333,
     "delta_leak_rate": 0.0,
-    "delta_false_positive_rate": -0.055555555555555525,
-    "delta_utility_loss": -0.055555555555555525,
+    "delta_false_positive_rate": -0.11538461538461536,
+    "delta_utility_loss": -0.11538461538461536,
     "delta_escalation_rate": 0.0,
     "dominant_changed_metric": "attack_success_rate",
     "security_gain_interpretation": "Security degradation is attack-success dominated, suggesting upstream gating contribution loss.",
@@ -173,25 +173,25 @@
   {
     "configuration": "no_sink_guard",
     "disabled_modules": "sink_guard",
-    "affected_cases_count": 17,
-    "affected_cases_ratio": 0.37777777777777777,
-    "match_rate": 0.5777777777777777,
+    "affected_cases_count": 21,
+    "affected_cases_ratio": 0.39622641509433965,
+    "match_rate": 0.5660377358490566,
     "attack_success_rate": 0.2962962962962963,
-    "leak_rate": 0.8235294117647058,
-    "false_positive_rate": 0.1111111111111111,
-    "utility_loss": 0.1111111111111111,
-    "escalation_rate": 0.044444444444444446,
+    "leak_rate": 0.8571428571428571,
+    "false_positive_rate": 0.15384615384615385,
+    "utility_loss": 0.15384615384615385,
+    "escalation_rate": 0.03773584905660377,
     "affected_family_count": 6,
     "top_affected_family": "sink_exfiltration_security",
     "affected_cases_by_family": {
       "sink_exfiltration_security": {
-        "total_cases": 9,
-        "affected_cases_count": 9,
+        "total_cases": 10,
+        "affected_cases_count": 10,
         "affected_cases_ratio": 1.0
       },
       "gray_zone_benign": {
-        "total_cases": 8,
-        "affected_cases_count": 6,
+        "total_cases": 12,
+        "affected_cases_count": 9,
         "affected_cases_ratio": 0.75
       },
       "benign_baseline": {
@@ -200,7 +200,7 @@
         "affected_cases_ratio": 0.2857142857142857
       },
       "metadata_drift_security": {
-        "total_cases": 12,
+        "total_cases": 15,
         "affected_cases_count": 0,
         "affected_cases_ratio": 0.0
       },
@@ -215,11 +215,11 @@
         "affected_cases_ratio": 0.0
       }
     },
-    "delta_match_rate": -0.13333333333333341,
-    "delta_attack_success_rate": 0.18518518518518517,
-    "delta_leak_rate": 0.5294117647058822,
-    "delta_false_positive_rate": -0.2222222222222222,
-    "delta_utility_loss": -0.2222222222222222,
+    "delta_match_rate": -0.09433962264150941,
+    "delta_attack_success_rate": 0.2222222222222222,
+    "delta_leak_rate": 0.6190476190476191,
+    "delta_false_positive_rate": -0.2692307692307692,
+    "delta_utility_loss": -0.2692307692307692,
     "delta_escalation_rate": 0.0,
     "dominant_changed_metric": "leak_rate",
     "security_gain_interpretation": "Security weakens on both attack success and leakage, indicating broad defense contribution loss.",

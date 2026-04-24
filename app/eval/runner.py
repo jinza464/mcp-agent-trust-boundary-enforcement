@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.core.models import DecisionAction, RiskLevel, TrustLabel
 from app.decision.decision_engine import DecisionContext, decide
 from app.eval.attack_cases import EvalAttackCase, default_attack_cases
+from app.eval.runtime_semantics import compute_execution_semantics
 from app.policy.capability_policy import classify_capabilities
 from app.sink.sink_guard import inspect_sink
 from app.tagging.trust_tagger import tag_source
@@ -23,32 +26,17 @@ class EvalCaseResult(BaseModel):
     is_attack: bool = Field(default=True, description="Whether this evaluated case is an attack case.")
     is_benign: bool = Field(default=False, description="Whether this evaluated case is benign.")
     involves_sink: bool = Field(default=False, description="Whether sink checks are involved for this case.")
-    disabled_modules: list[str] = Field(
-        default_factory=list,
-        description="Disabled modules under current ablation configuration.",
-    )
-    affected_by_ablation: bool = Field(
-        default=False,
-        description="Whether this case is structurally affected by disabled modules.",
-    )
+    disabled_modules: list[str] = Field(default_factory=list, description="Disabled modules under current ablation configuration.")
+    affected_by_ablation: bool = Field(default=False, description="Whether this case is structurally affected by disabled modules.")
     detected_risk_level: RiskLevel = Field(..., description="Detected risk level from decision engine.")
     decision_action: DecisionAction = Field(..., description="Decision action from decision engine.")
     sink_action: DecisionAction | None = Field(default=None, description="Sink guard action when sink is present.")
     matched_expectation: bool = Field(..., description="Whether result matched expected action/risk/(sink action).")
-    intervention_triggered: bool | None = Field(
-        default=None,
-        description="Prototype-level flag: whether any guard/policy intervention was triggered.",
-    )
-    completed_execution: bool | None = Field(
-        default=None,
-        description="Prototype-level flag: whether case reached normal execution completion path.",
-    )
-    execution_degraded: bool | None = Field(
-        default=None,
-        description="Prototype-level flag: whether execution quality/path was degraded by controls.",
-    )
-    reasons: list[str] = Field(default_factory=list, description="Decision reasons.")
-    findings: list[str] = Field(default_factory=list, description="Combined findings from pipeline.")
+    intervention_triggered: bool | None = Field(default=None)
+    completed_execution: bool | None = Field(default=None)
+    execution_degraded: bool | None = Field(default=None)
+    reasons: list[str] = Field(default_factory=list)
+    findings: list[str] = Field(default_factory=list)
 
 
 class AblationConfig(BaseModel):
@@ -56,33 +44,31 @@ class AblationConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    disable_trust_tagging: bool = Field(
-        default=False,
-        validation_alias=AliasChoices("disable_trust_tagging", "no_trust_tagging"),
-    )
-    disable_metadata_validation: bool = Field(
-        default=False,
-        validation_alias=AliasChoices("disable_metadata_validation", "no_metadata_validation"),
-    )
-    disable_sink_guard: bool = Field(
-        default=False,
-        validation_alias=AliasChoices("disable_sink_guard", "no_sink_guard"),
-    )
+    disable_trust_tagging: bool = Field(default=False, validation_alias=AliasChoices("disable_trust_tagging", "no_trust_tagging"))
+    disable_metadata_validation: bool = Field(default=False, validation_alias=AliasChoices("disable_metadata_validation", "no_metadata_validation"))
+    disable_sink_guard: bool = Field(default=False, validation_alias=AliasChoices("disable_sink_guard", "no_sink_guard"))
 
     @property
     def no_trust_tagging(self) -> bool:
-        """Backward-compatible alias."""
         return self.disable_trust_tagging
 
     @property
     def no_metadata_validation(self) -> bool:
-        """Backward-compatible alias."""
         return self.disable_metadata_validation
 
     @property
     def no_sink_guard(self) -> bool:
-        """Backward-compatible alias."""
         return self.disable_sink_guard
+
+
+class RuntimeExecutionHints(BaseModel):
+    """Optional runtime truth hints used to override inferred execution semantics."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    runtime_executed: bool | None = Field(default=None)
+    runtime_completed_execution: bool | None = Field(default=None)
+    runtime_execution_degraded: bool | None = Field(default=None)
 
 
 def _disabled_modules(cfg: AblationConfig) -> list[str]:
@@ -96,12 +82,7 @@ def _disabled_modules(cfg: AblationConfig) -> list[str]:
     return disabled
 
 
-def _case_affected_by_ablation(
-    case: EvalAttackCase,
-    cfg: AblationConfig,
-    baseline_source_trust: TrustLabel,
-) -> bool:
-    """Estimate whether this case is structurally affected by current ablation setting."""
+def _case_affected_by_ablation(case: EvalAttackCase, cfg: AblationConfig, baseline_source_trust: TrustLabel) -> bool:
     affected = False
     if cfg.disable_trust_tagging and baseline_source_trust != TrustLabel.TRUSTED:
         affected = True
@@ -113,65 +94,87 @@ def _case_affected_by_ablation(
 
 
 def _normalize_action_for_expectation(action: DecisionAction) -> DecisionAction:
-    """Normalize v2 action semantics for benchmark comparability.
-
-    In v2 baseline, SANDBOX is retained as a controlled execution mode instead of a
-    dominant terminal path. For expectation comparison against legacy-oriented case
-    labels, treat SANDBOX as ALLOW-equivalent unless cases explicitly encode SANDBOX.
-    """
     if action == DecisionAction.SANDBOX:
         return DecisionAction.ALLOW
     return action
 
 
-def _compute_execution_semantics(
-    decision_action: DecisionAction,
-    sink_action: DecisionAction | None,
-) -> tuple[bool, bool, bool]:
-    """Return (intervention_triggered, completed_execution, execution_degraded)."""
-    intervention_triggered = decision_action != DecisionAction.ALLOW or sink_action not in {None, DecisionAction.ALLOW}
+def _extract_bool(source: object, *keys: str) -> bool | None:
+    for key in keys:
+        value: object | None = None
+        if isinstance(source, Mapping):
+            if key in source:
+                value = source.get(key)
+        elif hasattr(source, key):
+            value = getattr(source, key)
+        if isinstance(value, bool):
+            return value
+    return None
 
-    # Completion means request can proceed without waiting/review hard stop.
-    decision_blocks = decision_action in {
-        DecisionAction.DENY,
-        DecisionAction.ESCALATE,
-        DecisionAction.REQUIRE_CONFIRMATION,
-    }
-    sink_blocks = sink_action in {DecisionAction.DENY, DecisionAction.REQUIRE_CONFIRMATION}
-    completed_execution = not (decision_blocks or sink_blocks)
 
-    # Degraded execution captures constrained/filtered paths, including sandbox mode.
-    execution_degraded = (
-        not completed_execution
-        or decision_action in {DecisionAction.SANDBOX, DecisionAction.REDACT}
+def _extract_runtime_hints_from_result(runtime_result: object | None) -> RuntimeExecutionHints:
+    if runtime_result is None:
+        return RuntimeExecutionHints()
+
+    root = runtime_result
+    nested: object | None = None
+    if isinstance(root, Mapping):
+        nested = root.get("final_execution_outcome")
+    else:
+        nested = getattr(root, "final_execution_outcome", None)
+    if nested is not None:
+        root = nested
+
+    return RuntimeExecutionHints(
+        runtime_executed=_extract_bool(root, "executed"),
+        runtime_completed_execution=_extract_bool(root, "completed_execution", "execution_completed"),
+        runtime_execution_degraded=_extract_bool(root, "execution_degraded"),
     )
-    return intervention_triggered, completed_execution, execution_degraded
 
 
-def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None = None) -> EvalCaseResult:
+def _resolve_runtime_hints(
+    case: EvalAttackCase,
+    runtime_result: object | None = None,
+) -> RuntimeExecutionHints:
+    if runtime_result is not None:
+        return _extract_runtime_hints_from_result(runtime_result)
+
+    runtime_candidate = case.source_metadata.get("runtime_result")
+    if runtime_candidate is not None:
+        return _extract_runtime_hints_from_result(runtime_candidate)
+
+    return RuntimeExecutionHints(
+        runtime_executed=_extract_bool(case.source_metadata, "runtime_executed"),
+        runtime_completed_execution=_extract_bool(
+            case.source_metadata,
+            "runtime_completed_execution",
+        ),
+        runtime_execution_degraded=_extract_bool(
+            case.source_metadata,
+            "runtime_execution_degraded",
+        ),
+    )
+
+
+def run_case(
+    case: EvalAttackCase,
+    ablation_config: AblationConfig | dict | None = None,
+    *,
+    runtime_result: object | None = None,
+) -> EvalCaseResult:
     """Execute one attack case through the minimal local security evaluation loop."""
-    cfg = (
-        ablation_config
-        if isinstance(ablation_config, AblationConfig)
-        else AblationConfig.model_validate(ablation_config or {})
-    )
-
+    cfg = ablation_config if isinstance(ablation_config, AblationConfig) else AblationConfig.model_validate(ablation_config or {})
     ablation_notes: list[str] = []
 
     baseline_source_trust = tag_source(case.source_type, case.source_content, metadata=case.source_metadata)
     source_trust = TrustLabel.TRUSTED if cfg.disable_trust_tagging else baseline_source_trust
     if cfg.disable_trust_tagging:
         ablation_notes.append("ablation:disable_trust_tagging (source trust fixed to trusted)")
+
     capability_result = classify_capabilities(case.tool_metadata)
-    metadata_result = (
-        None
-        if cfg.disable_metadata_validation
-        else (validate_metadata(case.old_snapshot, case.tool_metadata) if case.old_snapshot else None)
-    )
+    metadata_result = None if cfg.disable_metadata_validation else (validate_metadata(case.old_snapshot, case.tool_metadata) if case.old_snapshot else None)
     if cfg.disable_metadata_validation:
         ablation_notes.append("ablation:disable_metadata_validation (metadata checks skipped)")
-
-    old_snapshot_for_decision = None if cfg.disable_metadata_validation else case.old_snapshot
 
     decision_result = decide(
         DecisionContext(
@@ -182,7 +185,7 @@ def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None
             source_metadata=case.source_metadata,
             capability_result=capability_result,
             metadata_validation_result=metadata_result,
-            old_snapshot=old_snapshot_for_decision,
+            old_snapshot=None if cfg.disable_metadata_validation else case.old_snapshot,
         )
     )
 
@@ -207,9 +210,13 @@ def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None
         and (case.expected_sink_action is None or sink_action == case.expected_sink_action)
     )
 
-    intervention_triggered, completed_execution, execution_degraded = _compute_execution_semantics(
+    runtime_hints = _resolve_runtime_hints(case, runtime_result=runtime_result)
+    semantics = compute_execution_semantics(
         decision_result.action,
         sink_action,
+        runtime_executed=runtime_hints.runtime_executed,
+        runtime_completed_execution=runtime_hints.runtime_completed_execution,
+        runtime_execution_degraded=runtime_hints.runtime_execution_degraded,
     )
     disabled = _disabled_modules(cfg)
     affected_by_ablation = _case_affected_by_ablation(case, cfg, baseline_source_trust)
@@ -226,9 +233,9 @@ def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None
         decision_action=decision_result.action,
         sink_action=sink_action,
         matched_expectation=matched,
-        intervention_triggered=intervention_triggered,
-        completed_execution=completed_execution,
-        execution_degraded=execution_degraded,
+        intervention_triggered=semantics.intervention_triggered,
+        completed_execution=semantics.completed_execution,
+        execution_degraded=semantics.execution_degraded,
         reasons=decision_result.reasons,
         findings=decision_result.findings + sink_findings + ablation_notes,
     )
@@ -237,7 +244,15 @@ def run_case(case: EvalAttackCase, ablation_config: AblationConfig | dict | None
 def run_all_cases(
     cases: list[EvalAttackCase] | None = None,
     ablation_config: AblationConfig | dict | None = None,
+    *,
+    runtime_results_by_case: Mapping[str, object] | None = None,
 ) -> list[EvalCaseResult]:
-    """Execute all provided cases, or built-in defaults when omitted."""
     selected = cases or default_attack_cases()
-    return [run_case(case, ablation_config=ablation_config) for case in selected]
+    return [
+        run_case(
+            case,
+            ablation_config=ablation_config,
+            runtime_result=runtime_results_by_case.get(case.id) if runtime_results_by_case else None,
+        )
+        for case in selected
+    ]

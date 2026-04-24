@@ -1,0 +1,8 @@
+{
+  "event_type": "failure_report_export",
+  "timestamp": "2026-04-23T16:21:56.094044+00:00",
+  "payload": {
+    "json": "data\\test_outputs\\report-svc-33cdc71b0c0b47ed821be1d12ade40e3\\failure_analysis_report.json",
+    "markdown": "data\\test_outputs\\report-svc-33cdc71b0c0b47ed821be1d12ade40e3\\failure_analysis_report.md"
+  }
+}

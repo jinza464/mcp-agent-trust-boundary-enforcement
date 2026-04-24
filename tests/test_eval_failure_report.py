@@ -120,9 +120,14 @@ def test_build_failure_report_categories_and_required_fields() -> None:
         assert first_mismatch.sink_action
         assert first_mismatch.primary_failure_reason
         assert first_mismatch.likely_responsible_module
+        assert 0.0 <= first_mismatch.module_attribution_confidence <= 1.0
+        assert first_mismatch.attribution_evidence
 
         mapped = next(item for item in report.mismatched_cases if item.case_id == "case-tool-shadowing")
         assert mapped.likely_responsible_module == "metadata_validator"
+        assert mapped.expected_failure_mode != "unknown"
+        assert report.attribution_candidate_count >= 1
+        assert "metadata_validator" in report.module_responsibility_distribution
     finally:
         if root.exists():
             for item in root.glob("*"):
@@ -182,6 +187,7 @@ def test_export_failure_report_json_and_markdown() -> None:
         md_content = exported["markdown"].read_text(encoding="utf-8")
         assert "# Failure Analysis Report" in md_content
         assert "## Successful Attacks" in md_content
+        assert "## Module Attribution Snapshot" in md_content
     finally:
         if root.exists():
             for item in root.glob("*"):

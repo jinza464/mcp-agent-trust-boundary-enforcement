@@ -1,4 +1,11 @@
-"""Strict Tool Identity Registry for trust-boundary enforcement research and prototyping."""
+"""Strict Tool Identity Registry for trust-boundary enforcement research and prototyping.
+
+Phase-1 revision goals:
+- preserve current benchmark behavior
+- strengthen type discipline for change and observation categories
+- keep JSON persistence backward-compatible
+- make track/history state easier to consume downstream
+"""
 
 from __future__ import annotations
 
@@ -6,6 +13,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -13,11 +21,10 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.models import IntegrityState, RiskLevel, ToolMetadata, ToolSnapshot, TrustLabel
+from app.mcp.protocol_models import RequestLineage
 
 
-class ChangeCategory(str):
-    """Canonical change categories for identity and drift analysis."""
-
+class ChangeCategory(str, Enum):
     DESCRIPTIVE_CHANGE = "descriptive_change"
     SCHEMA_CHANGE = "schema_change"
     SERVER_RELOCATION = "server_relocation"
@@ -26,9 +33,7 @@ class ChangeCategory(str):
     SUSPICIOUS_CAPABILITY_DRIFT = "suspicious_capability_drift"
 
 
-class ObservationKind(str):
-    """Observation classification for historical traceability."""
-
+class ObservationKind(str, Enum):
     FIRST_OBSERVATION = "first_observation"
     DUPLICATE_OBSERVATION = "duplicate_observation"
     MEANINGFUL_UPDATE = "meaningful_update"
@@ -36,65 +41,43 @@ class ObservationKind(str):
 
 
 class ChangeDetectionResult(BaseModel):
-    """Structured identity drift result with stronger change typing semantics."""
-
     model_config = ConfigDict(extra="forbid")
 
-    changed: bool = Field(..., description="Whether any tracked identity field changed.")
-    changed_fields: list[str] = Field(
-        default_factory=list,
-        description="Backward-compatible changed field names.",
-    )
-    change_categories: list[str] = Field(
-        default_factory=list,
-        description="Typed change categories (descriptive/schema/rollback/etc.).",
-    )
-    severity: RiskLevel = Field(..., description="Severity level derived from change categories.")
-    drift_summary: str = Field(..., description="Human-readable drift summary.")
-    suspicious: bool = Field(..., description="Whether drift is considered suspicious.")
-    old_values: dict[str, str] = Field(default_factory=dict, description="Previous identity values.")
-    new_values: dict[str, str] = Field(default_factory=dict, description="New identity values.")
+    changed: bool
+    changed_fields: list[str] = Field(default_factory=list)
+    change_categories: list[ChangeCategory] = Field(default_factory=list)
+    severity: RiskLevel
+    drift_summary: str
+    suspicious: bool
+    old_values: dict[str, str] = Field(default_factory=dict)
+    new_values: dict[str, str] = Field(default_factory=dict)
 
 
 class RegisterToolResult(BaseModel):
-    """Structured registration outcome with observation-class and persistence metadata."""
-
     model_config = ConfigDict(extra="forbid")
 
-    status: str = Field(
-        ...,
-        description=(
-            "One of: registered_new, registered_duplicate, registered_update, "
-            "registered_suspicious_update."
-        ),
-    )
-    tool_name: str = Field(..., description="Tool name.")
-    server_origin: str = Field(..., description="Server origin used for namespacing.")
-    tool_identity: str = Field(..., description="Logical tool identity.")
-    namespace: str = Field(..., description="Resolved namespace/provider scope.")
-
-    is_new: bool = Field(..., description="Whether this is the first registration for this identity+origin.")
-    is_duplicate: bool = Field(..., description="Whether identity fields are unchanged from previous snapshot.")
-    observation_kind: str = Field(..., description="Observation kind for this registration event.")
-
-    first_seen_at: datetime = Field(..., description="First observation timestamp for this identity+origin.")
-    last_seen_at: datetime = Field(..., description="Last observation timestamp for this identity+origin.")
-    observation_count: int = Field(..., ge=1, description="Total observations for this identity+origin.")
-
-    snapshot: ToolSnapshot = Field(..., description="Persisted snapshot after registration.")
-    previous_snapshot: ToolSnapshot | None = Field(
-        default=None,
-        description="Previous latest snapshot for this identity+origin.",
-    )
-    change_result: ChangeDetectionResult | None = Field(
-        default=None,
-        description="Typed drift result against previous snapshot when available.",
-    )
+    status: str
+    tool_name: str
+    server_origin: str
+    tool_identity: str
+    namespace: str
+    is_new: bool
+    is_duplicate: bool
+    observation_kind: ObservationKind
+    first_seen_at: datetime
+    last_seen_at: datetime
+    observation_count: int = Field(..., ge=1)
+    snapshot: ToolSnapshot
+    previous_snapshot: ToolSnapshot | None = None
+    change_result: ChangeDetectionResult | None = None
+    request_lineage: RequestLineage | None = None
+    last_seen_request_id: str | None = None
+    last_seen_session_id: str | None = None
+    feature_scope: str | None = None
+    lineage_root_request_id: str | None = None
 
 
 class ToolIdentityTrack(BaseModel):
-    """Persistent history state for one (tool_identity, server_origin) pair."""
-
     model_config = ConfigDict(extra="forbid")
 
     tool_identity: str
@@ -106,13 +89,17 @@ class ToolIdentityTrack(BaseModel):
     last_seen_at: datetime
     observation_count: int
     suspicious_update_count: int = 0
+    last_seen_request_id: str | None = None
+    last_seen_session_id: str | None = None
+    feature_scope: str | None = None
+    lineage_root_request_id: str | None = None
     drift_history_summary: dict[str, Any] = Field(
         default_factory=lambda: {
             "duplicate_observation_count": 0,
             "benign_update_count": 0,
             "suspicious_update_count": 0,
             "recent_change_categories": [],
-            "last_observation_kind": ObservationKind.FIRST_OBSERVATION,
+            "last_observation_kind": ObservationKind.FIRST_OBSERVATION.value,
         }
     )
     snapshots: list[ToolSnapshot] = Field(default_factory=list)
@@ -120,14 +107,12 @@ class ToolIdentityTrack(BaseModel):
 
 
 class ToolRegistry:
-    """Tool Identity Registry with strict drift semantics and compatibility APIs."""
-
     def __init__(self) -> None:
         self._tracks_by_identity_origin: dict[str, ToolIdentityTrack] = {}
 
     @staticmethod
     def _hash_payload(payload: Any) -> str:
-        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -154,7 +139,6 @@ class ToolRegistry:
     def _compute_input_schema_hash(cls, metadata: ToolMetadata) -> str:
         if metadata.input_schema is not None:
             return cls._hash_payload(metadata.input_schema)
-        # Compatibility fallback for legacy metadata without formal schema fields.
         fallback = {
             "capabilities": sorted(cap.value for cap in metadata.capabilities),
             "tags": sorted(metadata.tags),
@@ -174,11 +158,12 @@ class ToolRegistry:
 
     @classmethod
     def _compute_schema_hash(cls, metadata: ToolMetadata) -> str:
-        payload = {
-            "input_schema_hash": cls._compute_input_schema_hash(metadata),
-            "output_schema_hash": cls._compute_output_schema_hash(metadata),
-        }
-        return cls._hash_payload(payload)
+        return cls._hash_payload(
+            {
+                "input_schema_hash": cls._compute_input_schema_hash(metadata),
+                "output_schema_hash": cls._compute_output_schema_hash(metadata),
+            }
+        )
 
     @staticmethod
     def _capability_signature(metadata: ToolMetadata) -> str:
@@ -205,17 +190,13 @@ class ToolRegistry:
         return f"{tool_identity}::{server_origin}"
 
     @staticmethod
-    def _name_origin_key(tool_name: str, server_origin: str) -> str:
-        return f"{tool_name}::{server_origin}"
-
-    @staticmethod
     def _base_drift_history_summary() -> dict[str, Any]:
         return {
             "duplicate_observation_count": 0,
             "benign_update_count": 0,
             "suspicious_update_count": 0,
             "recent_change_categories": [],
-            "last_observation_kind": ObservationKind.FIRST_OBSERVATION,
+            "last_observation_kind": ObservationKind.FIRST_OBSERVATION.value,
         }
 
     @classmethod
@@ -223,101 +204,49 @@ class ToolRegistry:
         cls,
         summary: dict[str, Any] | None,
         *,
-        observation_kind: str,
-        change_categories: list[str] | None = None,
+        observation_kind: ObservationKind,
+        change_categories: list[ChangeCategory] | None = None,
     ) -> dict[str, Any]:
         base = dict(cls._base_drift_history_summary())
         if isinstance(summary, dict):
             base.update(summary)
-
-        base["duplicate_observation_count"] = int(base.get("duplicate_observation_count", 0))
-        base["benign_update_count"] = int(base.get("benign_update_count", 0))
-        base["suspicious_update_count"] = int(base.get("suspicious_update_count", 0))
-
         if observation_kind == ObservationKind.DUPLICATE_OBSERVATION:
-            base["duplicate_observation_count"] += 1
+            base["duplicate_observation_count"] = int(base.get("duplicate_observation_count", 0)) + 1
         elif observation_kind == ObservationKind.MEANINGFUL_UPDATE:
-            base["benign_update_count"] += 1
+            base["benign_update_count"] = int(base.get("benign_update_count", 0)) + 1
         elif observation_kind == ObservationKind.SUSPICIOUS_UPDATE:
-            base["suspicious_update_count"] += 1
-
+            base["suspicious_update_count"] = int(base.get("suspicious_update_count", 0)) + 1
         recent = list(base.get("recent_change_categories", [])) if isinstance(base.get("recent_change_categories"), list) else []
         if change_categories:
-            recent.extend(change_categories)
+            recent.extend(item.value for item in change_categories)
             recent = recent[-12:]
         base["recent_change_categories"] = recent
-        base["last_observation_kind"] = observation_kind
+        base["last_observation_kind"] = observation_kind.value
         return base
 
     @classmethod
-    def _normalize_drift_history_summary(cls, summary: dict[str, Any] | None) -> dict[str, Any]:
-        base = dict(cls._base_drift_history_summary())
-        if isinstance(summary, dict):
-            base.update(summary)
-        base["duplicate_observation_count"] = max(0, int(base.get("duplicate_observation_count", 0)))
-        base["benign_update_count"] = max(0, int(base.get("benign_update_count", 0)))
-        base["suspicious_update_count"] = max(0, int(base.get("suspicious_update_count", 0)))
-        recent = base.get("recent_change_categories", [])
-        if not isinstance(recent, list):
-            recent = []
-        base["recent_change_categories"] = [str(item) for item in recent][-12:]
-        base["last_observation_kind"] = str(base.get("last_observation_kind", ObservationKind.FIRST_OBSERVATION))
-        return base
-
-    @classmethod
-    def _rebuild_drift_history_summary(
+    def _build_snapshot(
         cls,
-        observation_history: list[str],
-        snapshots: list[ToolSnapshot],
-    ) -> tuple[int, dict[str, Any]]:
-        summary = cls._base_drift_history_summary()
-        suspicious_count = 0
-        # Reconstruct from per-step observations and adjacent snapshot drift.
-        for idx, raw_kind in enumerate(observation_history):
-            kind = str(raw_kind)
-            categories: list[str] = []
-            if idx > 0 and idx < len(snapshots):
-                prev = snapshots[idx - 1]
-                curr = snapshots[idx]
-                if prev.tool and curr.tool:
-                    if prev.description_hash != curr.description_hash:
-                        categories.append(ChangeCategory.DESCRIPTIVE_CHANGE)
-                    if prev.input_schema_hash != curr.input_schema_hash or prev.output_schema_hash != curr.output_schema_hash:
-                        categories.append(ChangeCategory.SCHEMA_CHANGE)
-                    if prev.server_origin != curr.server_origin:
-                        categories.append(ChangeCategory.SERVER_RELOCATION)
-                    old_semver = cls._parse_semver(prev.observed_version or prev.tool.version)
-                    new_semver = cls._parse_semver(curr.observed_version or curr.tool.version)
-                    if old_semver and new_semver and new_semver < old_semver:
-                        categories.append(ChangeCategory.ROLLBACK)
-            summary = cls._update_drift_history_summary(
-                summary,
-                observation_kind=kind,
-                change_categories=categories,
-            )
-            if kind == ObservationKind.SUSPICIOUS_UPDATE:
-                suspicious_count += 1
-        return suspicious_count, summary
-
-    def _append_observation_history(
-        self,
-        track: ToolIdentityTrack,
-        *,
-        observation_kind: str,
-        change_categories: list[str] | None = None,
-    ) -> None:
-        track.observation_history.append(observation_kind)
-        track.drift_history_summary = self._update_drift_history_summary(
-            track.drift_history_summary,
-            observation_kind=observation_kind,
-            change_categories=change_categories,
-        )
-        if observation_kind == ObservationKind.SUSPICIOUS_UPDATE:
-            track.suspicious_update_count += 1
-
-    @classmethod
-    def _build_snapshot(cls, metadata: ToolMetadata) -> ToolSnapshot:
+        metadata: ToolMetadata,
+        request_lineage: RequestLineage | None = None,
+        session_id: str | None = None,
+    ) -> ToolSnapshot:
         identity = cls._build_identity_record(metadata)
+        runtime_context: dict[str, str] = {"schema_hash": identity["schema_hash"]}
+        if request_lineage is not None:
+            runtime_context.update(
+                {
+                    "request_id": request_lineage.request_id,
+                    "session_id": (session_id or request_lineage.session_id or ""),
+                    "parent_request_id": request_lineage.parent_request_id or "",
+                    "lineage_root_request_id": request_lineage.root_user_request_id,
+                    "lineage_source_role": request_lineage.source_role,
+                    "feature_scope": request_lineage.feature,
+                    "lineage_trust_label": request_lineage.trust_label.value,
+                }
+            )
+        elif session_id is not None:
+            runtime_context["session_id"] = session_id
         return ToolSnapshot(
             snapshot_id=f"snap-{uuid4().hex}",
             tool=metadata,
@@ -329,7 +258,7 @@ class ToolRegistry:
             observed_version=metadata.version,
             integrity_state=IntegrityState.UNKNOWN,
             trust_label=TrustLabel.UNKNOWN,
-            runtime_context={},
+            runtime_context=runtime_context,
         )
 
     @staticmethod
@@ -340,27 +269,28 @@ class ToolRegistry:
         return int(match.group(1)), int(match.group(2)), int(match.group(3))
 
     @classmethod
-    def _severity_from_categories(cls, categories: list[str]) -> RiskLevel:
+    def _severity_from_categories(cls, categories: list[ChangeCategory]) -> RiskLevel:
         if not categories:
             return RiskLevel.LOW
-        if any(cat in categories for cat in [ChangeCategory.ROLLBACK, ChangeCategory.NAMESPACE_CONFLICT]):
+        if ChangeCategory.ROLLBACK in categories or ChangeCategory.NAMESPACE_CONFLICT in categories:
             return RiskLevel.CRITICAL
-        if any(cat in categories for cat in [ChangeCategory.SERVER_RELOCATION, ChangeCategory.SUSPICIOUS_CAPABILITY_DRIFT]):
+        if (
+            ChangeCategory.SERVER_RELOCATION in categories
+            or ChangeCategory.SUSPICIOUS_CAPABILITY_DRIFT in categories
+            or ChangeCategory.SCHEMA_CHANGE in categories
+        ):
             return RiskLevel.HIGH
-        if any(cat in categories for cat in [ChangeCategory.SCHEMA_CHANGE]):
-            return RiskLevel.HIGH
-        if any(cat in categories for cat in [ChangeCategory.DESCRIPTIVE_CHANGE]):
+        if ChangeCategory.DESCRIPTIVE_CHANGE in categories:
             return RiskLevel.MEDIUM
         return RiskLevel.MEDIUM
 
-    @classmethod
-    def _drift_summary(cls, categories: list[str]) -> str:
+    @staticmethod
+    def _drift_summary(categories: list[ChangeCategory]) -> str:
         if not categories:
             return "No meaningful drift detected (duplicate observation)."
-        return "Detected drift categories: " + ", ".join(categories) + "."
+        return "Detected drift categories: " + ", ".join(item.value for item in categories) + "."
 
     def _detect_namespace_conflict_global(self, new_metadata: ToolMetadata) -> bool:
-        """Detect if same tool name appears under same origin with different namespace/provider."""
         new_name = new_metadata.name
         new_origin = self._normalize_server_origin(new_metadata)
         new_namespace = self._normalize_namespace(new_metadata)
@@ -370,7 +300,6 @@ class ToolRegistry:
         return False
 
     def detect_changes(self, old_snapshot: ToolSnapshot, new_metadata: ToolMetadata) -> ChangeDetectionResult:
-        """Compare identity fields and emit typed drift categories with severity."""
         old_values = {
             "description_hash": old_snapshot.description_hash or self._compute_description_hash(old_snapshot.tool),
             "input_schema_hash": old_snapshot.input_schema_hash or self._compute_input_schema_hash(old_snapshot.tool),
@@ -390,59 +319,35 @@ class ToolRegistry:
             "tool_name": old_snapshot.tool.name,
         }
         new_values = self._build_identity_record(new_metadata)
-
         changed_fields = [key for key in old_values if old_values[key] != new_values[key]]
-        categories: list[str] = []
-
+        categories: list[ChangeCategory] = []
         if "description_hash" in changed_fields:
             categories.append(ChangeCategory.DESCRIPTIVE_CHANGE)
-
-        if "input_schema_hash" in changed_fields or "output_schema_hash" in changed_fields or "schema_hash" in changed_fields:
+        if {"input_schema_hash", "output_schema_hash", "schema_hash"}.intersection(changed_fields):
             categories.append(ChangeCategory.SCHEMA_CHANGE)
-
         if "server_origin" in changed_fields:
             categories.append(ChangeCategory.SERVER_RELOCATION)
-
         if "namespace" in changed_fields or "provider_identity" in changed_fields:
             categories.append(ChangeCategory.NAMESPACE_CONFLICT)
-
         old_semver = self._parse_semver(old_values["version"])
         new_semver = self._parse_semver(new_values["version"])
         if old_semver and new_semver and new_semver < old_semver:
             categories.append(ChangeCategory.ROLLBACK)
-
         if "capabilities" in changed_fields and old_values["version"] == new_values["version"]:
             categories.append(ChangeCategory.SUSPICIOUS_CAPABILITY_DRIFT)
 
-        # Backward compatibility: keep old public changed_fields names.
         compat_changed_fields = sorted(
             {
-                *(
-                    ["description_hash"] if ChangeCategory.DESCRIPTIVE_CHANGE in categories else []
-                ),
-                *(
-                    ["schema_hash"] if ChangeCategory.SCHEMA_CHANGE in categories else []
-                ),
-                *(
-                    ["server_origin"] if ChangeCategory.SERVER_RELOCATION in categories else []
-                ),
-                *(
-                    ["version"] if ChangeCategory.ROLLBACK in categories else []
-                ),
-                *(
-                    ["namespace", "provider_identity"]
-                    if ChangeCategory.NAMESPACE_CONFLICT in categories
-                    else []
-                ),
-                *(
-                    ["capabilities"] if ChangeCategory.SUSPICIOUS_CAPABILITY_DRIFT in categories else []
-                ),
+                *(["description_hash"] if ChangeCategory.DESCRIPTIVE_CHANGE in categories else []),
+                *(["schema_hash"] if ChangeCategory.SCHEMA_CHANGE in categories else []),
+                *(["server_origin"] if ChangeCategory.SERVER_RELOCATION in categories else []),
+                *(["version"] if ChangeCategory.ROLLBACK in categories else []),
+                *(["namespace", "provider_identity"] if ChangeCategory.NAMESPACE_CONFLICT in categories else []),
+                *(["capabilities"] if ChangeCategory.SUSPICIOUS_CAPABILITY_DRIFT in categories else []),
             }
         )
-
         severity = self._severity_from_categories(categories)
         suspicious = severity in {RiskLevel.HIGH, RiskLevel.CRITICAL}
-
         return ChangeDetectionResult(
             changed=bool(categories),
             changed_fields=compat_changed_fields,
@@ -454,21 +359,33 @@ class ToolRegistry:
             new_values=new_values,
         )
 
-    def register_tool(self, metadata: ToolMetadata) -> RegisterToolResult:
-        """Register metadata observation with strict identity/drift semantics."""
+    def register_tool(
+        self,
+        metadata: ToolMetadata,
+        *,
+        request_lineage: RequestLineage | None = None,
+        session_id: str | None = None,
+    ) -> RegisterToolResult:
         now = datetime.now(UTC)
         tool_identity = self._normalize_tool_identity(metadata)
         server_origin = self._normalize_server_origin(metadata)
         namespace = self._normalize_namespace(metadata)
-
         track_key = self._identity_origin_key(tool_identity, server_origin)
-        new_snapshot = self._build_snapshot(metadata)
+        observed_request_id = request_lineage.request_id if request_lineage is not None else None
+        observed_session_id = session_id or (request_lineage.session_id if request_lineage is not None else None)
+        observed_feature_scope = request_lineage.feature if request_lineage is not None else None
+        observed_lineage_root = request_lineage.root_user_request_id if request_lineage is not None else None
 
+        new_snapshot = self._build_snapshot(
+            metadata,
+            request_lineage=request_lineage,
+            session_id=observed_session_id,
+        )
         track = self._tracks_by_identity_origin.get(track_key)
 
         if track is None:
             conflict = self._detect_namespace_conflict_global(metadata)
-            first_observation_kind = ObservationKind.SUSPICIOUS_UPDATE if conflict else ObservationKind.FIRST_OBSERVATION
+            observation_kind = ObservationKind.SUSPICIOUS_UPDATE if conflict else ObservationKind.FIRST_OBSERVATION
             initial_categories = [ChangeCategory.NAMESPACE_CONFLICT] if conflict else []
             track = ToolIdentityTrack(
                 tool_identity=tool_identity,
@@ -480,18 +397,18 @@ class ToolRegistry:
                 last_seen_at=now,
                 observation_count=1,
                 suspicious_update_count=1 if conflict else 0,
-                drift_history_summary=self._update_drift_history_summary(
-                    None,
-                    observation_kind=first_observation_kind,
-                    change_categories=initial_categories,
-                ),
+                last_seen_request_id=observed_request_id,
+                last_seen_session_id=observed_session_id,
+                feature_scope=observed_feature_scope,
+                lineage_root_request_id=observed_lineage_root,
+                drift_history_summary=self._update_drift_history_summary(None, observation_kind=observation_kind, change_categories=initial_categories),
                 snapshots=[new_snapshot],
-                observation_history=[first_observation_kind],
+                observation_history=[observation_kind.value],
             )
             self._tracks_by_identity_origin[track_key] = track
-
+            change_result = None
             if conflict:
-                conflict_result = ChangeDetectionResult(
+                change_result = ChangeDetectionResult(
                     changed=True,
                     changed_fields=["namespace", "provider_identity"],
                     change_categories=[ChangeCategory.NAMESPACE_CONFLICT],
@@ -501,46 +418,40 @@ class ToolRegistry:
                     old_values={},
                     new_values=self._build_identity_record(metadata),
                 )
-                return RegisterToolResult(
-                    status="registered_suspicious_update",
-                    tool_name=metadata.name,
-                    server_origin=server_origin,
-                    tool_identity=tool_identity,
-                    namespace=namespace,
-                    is_new=True,
-                    is_duplicate=False,
-                    observation_kind=ObservationKind.SUSPICIOUS_UPDATE,
-                    first_seen_at=track.first_seen_at,
-                    last_seen_at=track.last_seen_at,
-                    observation_count=track.observation_count,
-                    snapshot=new_snapshot,
-                    previous_snapshot=None,
-                    change_result=conflict_result,
-                )
-
             return RegisterToolResult(
-                status="registered_new",
+                status="registered_suspicious_update" if conflict else "registered_new",
                 tool_name=metadata.name,
                 server_origin=server_origin,
                 tool_identity=tool_identity,
                 namespace=namespace,
                 is_new=True,
                 is_duplicate=False,
-                observation_kind=ObservationKind.FIRST_OBSERVATION,
+                observation_kind=observation_kind,
                 first_seen_at=track.first_seen_at,
                 last_seen_at=track.last_seen_at,
                 observation_count=track.observation_count,
                 snapshot=new_snapshot,
                 previous_snapshot=None,
-                change_result=None,
+                change_result=change_result,
+                request_lineage=request_lineage,
+                last_seen_request_id=track.last_seen_request_id,
+                last_seen_session_id=track.last_seen_session_id,
+                feature_scope=track.feature_scope,
+                lineage_root_request_id=track.lineage_root_request_id,
             )
 
         previous_snapshot = track.snapshots[-1]
         change_result = self.detect_changes(previous_snapshot, metadata)
-
         track.last_seen_at = now
         track.observation_count += 1
         track.snapshots.append(new_snapshot)
+        if request_lineage is not None:
+            track.last_seen_request_id = observed_request_id
+            track.last_seen_session_id = observed_session_id
+            track.feature_scope = observed_feature_scope
+            track.lineage_root_request_id = observed_lineage_root
+        elif observed_session_id is not None:
+            track.last_seen_session_id = observed_session_id
 
         if not change_result.changed:
             observation_kind = ObservationKind.DUPLICATE_OBSERVATION
@@ -550,15 +461,17 @@ class ToolRegistry:
             observation_kind = ObservationKind.SUSPICIOUS_UPDATE
             status = "registered_suspicious_update"
             is_duplicate = False
+            track.suspicious_update_count += 1
         else:
             observation_kind = ObservationKind.MEANINGFUL_UPDATE
             status = "registered_update"
             is_duplicate = False
 
-        self._append_observation_history(
-            track,
+        track.observation_history.append(observation_kind.value)
+        track.drift_history_summary = self._update_drift_history_summary(
+            track.drift_history_summary,
             observation_kind=observation_kind,
-            change_categories=change_result.change_categories if change_result else [],
+            change_categories=change_result.change_categories,
         )
 
         return RegisterToolResult(
@@ -576,10 +489,14 @@ class ToolRegistry:
             snapshot=new_snapshot,
             previous_snapshot=previous_snapshot,
             change_result=change_result,
+            request_lineage=request_lineage,
+            last_seen_request_id=track.last_seen_request_id,
+            last_seen_session_id=track.last_seen_session_id,
+            feature_scope=track.feature_scope,
+            lineage_root_request_id=track.lineage_root_request_id,
         )
 
     def get_tool_snapshot(self, tool_name: str, server_origin: str) -> ToolSnapshot | None:
-        """Get latest snapshot for a tool name and server origin (compatibility API)."""
         latest_track: ToolIdentityTrack | None = None
         for track in self._tracks_by_identity_origin.values():
             if track.tool_name == tool_name and track.server_origin == server_origin:
@@ -590,11 +507,9 @@ class ToolRegistry:
         return latest_track.snapshots[-1]
 
     def get_identity_track(self, tool_identity: str, server_origin: str) -> ToolIdentityTrack | None:
-        """Get full identity track for advanced analysis interfaces."""
         return self._tracks_by_identity_origin.get(self._identity_origin_key(tool_identity, server_origin))
 
     def save_to_json(self, file_path: str | Path) -> Path:
-        """Persist full registry state with industrial traceability metadata."""
         path = Path(file_path)
         payload = {
             "tracks_by_identity_origin": {
@@ -607,48 +522,16 @@ class ToolRegistry:
 
     @classmethod
     def load_from_json(cls, file_path: str | Path) -> ToolRegistry:
-        """Load registry state; supports both new track format and legacy snapshot map."""
         path = Path(file_path)
         payload = json.loads(path.read_text(encoding="utf-8"))
         registry = cls()
-
         if "tracks_by_identity_origin" in payload:
             for key, raw_track in payload.get("tracks_by_identity_origin", {}).items():
                 track = ToolIdentityTrack.model_validate(raw_track)
-                rebuilt_count, rebuilt_summary = cls._rebuild_drift_history_summary(
-                    track.observation_history,
-                    track.snapshots,
-                )
-                if not track.drift_history_summary:
-                    track.drift_history_summary = rebuilt_summary
-                else:
-                    normalized = cls._normalize_drift_history_summary(track.drift_history_summary)
-                    normalized["duplicate_observation_count"] = max(
-                        int(normalized.get("duplicate_observation_count", 0)),
-                        int(rebuilt_summary.get("duplicate_observation_count", 0)),
-                    )
-                    normalized["benign_update_count"] = max(
-                        int(normalized.get("benign_update_count", 0)),
-                        int(rebuilt_summary.get("benign_update_count", 0)),
-                    )
-                    normalized["suspicious_update_count"] = max(
-                        int(normalized.get("suspicious_update_count", 0)),
-                        int(rebuilt_summary.get("suspicious_update_count", 0)),
-                    )
-                    if not normalized.get("recent_change_categories"):
-                        normalized["recent_change_categories"] = rebuilt_summary.get("recent_change_categories", [])
-                    if track.observation_history:
-                        normalized["last_observation_kind"] = str(track.observation_history[-1])
-                    track.drift_history_summary = normalized
-                track.suspicious_update_count = max(
-                    int(track.suspicious_update_count),
-                    rebuilt_count,
-                    int(track.drift_history_summary.get("suspicious_update_count", 0)),
-                )
                 registry._tracks_by_identity_origin[key] = track
             return registry
 
-        # Legacy compatibility loader for old format: {"snapshots_by_key": {"name::origin": [snapshots...]}}
+        # legacy loader
         for name_origin_key, raw_snapshots in payload.get("snapshots_by_key", {}).items():
             snapshots = [ToolSnapshot.model_validate(item) for item in raw_snapshots]
             if not snapshots:
@@ -667,16 +550,12 @@ class ToolRegistry:
                 last_seen_at=latest.captured_at,
                 observation_count=len(snapshots),
                 suspicious_update_count=0,
+                last_seen_request_id=None,
+                last_seen_session_id=None,
+                feature_scope=None,
+                lineage_root_request_id=None,
                 snapshots=snapshots,
-                observation_history=[ObservationKind.FIRST_OBSERVATION]
-                + [ObservationKind.MEANINGFUL_UPDATE] * (len(snapshots) - 1),
+                observation_history=[ObservationKind.FIRST_OBSERVATION.value] + [ObservationKind.MEANINGFUL_UPDATE.value] * (len(snapshots) - 1),
             )
-            rebuilt_count, rebuilt_summary = cls._rebuild_drift_history_summary(
-                track.observation_history,
-                track.snapshots,
-            )
-            track.suspicious_update_count = rebuilt_count
-            track.drift_history_summary = rebuilt_summary
             registry._tracks_by_identity_origin[track_key] = track
-
         return registry

@@ -1,27 +1,64 @@
 """Core domain models for trust-boundary enforcement research and industrial prototyping.
 
-Design goals:
-- Keep backward compatibility for current prototype modules.
-- Promote previously implicit proxy fields into explicit first-class fields.
-- Provide stronger, formalized structures for identity, policy, and decision reasoning.
+Revision goals for this phase:
+- keep wire/runtime compatibility with the current prototype
+- tighten type discipline where it does not break the benchmark
+- reduce the gap between model-layer abstractions and downstream consumers
+- preserve JSON-friendly serialization for audit, testing, and experiment export
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import TypeAlias
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+
+JsonObject: TypeAlias = dict[str, JsonValue]
+
+# Fixed-structure-but-flexible JSON documents around tool schema boundaries.
+ToolSchemaDocument: TypeAlias = JsonObject
+InvocationConstraintDocument: TypeAlias = JsonObject
+
+# Open audit/evidence payload carried across module boundaries.
+# These fields intentionally remain extensible for research instrumentation.
+RuntimeAuditContext: TypeAlias = JsonObject
+ModuleEvidencePayload: TypeAlias = JsonObject
+DecisionEvidencePayload: TypeAlias = JsonObject
+
+
+def _normalize_string_list(value: object, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if not isinstance(value, (list, tuple, set)):
+        raise TypeError(f"{field_name} must be a string or an array of strings.")
+    normalized: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _normalize_json_object(value: object, *, field_name: str) -> JsonObject:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError(f"{field_name} must be an object.")
+    return {str(key): item for key, item in value.items()}
+
+
+def _normalize_optional_json_object(value: object, *, field_name: str) -> JsonObject | None:
+    if value is None:
+        return None
+    return _normalize_json_object(value, field_name=field_name)
 
 
 class TrustLabel(str, Enum):
-    """Trust label assigned to a source/entity under evaluation.
-
-    Compatibility note:
-    Existing modules rely on these exact string values; keep stable.
-    """
-
     TRUSTED = "trusted"
     SEMI_TRUSTED = "semi_trusted"
     UNTRUSTED = "untrusted"
@@ -30,14 +67,6 @@ class TrustLabel(str, Enum):
 
 
 class CapabilityType(str, Enum):
-    """Legacy flat capability taxonomy used by existing prototype modules.
-
-    Compatibility note:
-    Retained for current policy/validator/decision code paths.
-    Prefer the structured taxonomy (`BaseActionCapability`, `ResourceScope`,
-    `InvocationMechanism`, `PolicyCapabilityLabel`) for new development.
-    """
-
     READ = "read"
     WRITE = "write"
     EXECUTE = "execute"
@@ -48,8 +77,6 @@ class CapabilityType(str, Enum):
 
 
 class BaseActionCapability(str, Enum):
-    """Action-oriented capability primitive (what operation is performed)."""
-
     READ = "read"
     WRITE = "write"
     EXECUTE = "execute"
@@ -58,8 +85,6 @@ class BaseActionCapability(str, Enum):
 
 
 class ResourceScope(str, Enum):
-    """Resource domain targeted by a tool action (what is acted on)."""
-
     FILE = "file"
     NETWORK = "network"
     SECRET = "secret"
@@ -70,8 +95,6 @@ class ResourceScope(str, Enum):
 
 
 class InvocationMechanism(str, Enum):
-    """Invocation mechanism/channel (how action is triggered)."""
-
     LOCAL_FUNCTION = "local_function"
     MCP_TOOL = "mcp_tool"
     REMOTE_API = "remote_api"
@@ -80,19 +103,17 @@ class InvocationMechanism(str, Enum):
 
 
 class PolicyCapabilityLabel(str, Enum):
-    """Normalized policy labels consumed by formal policy/decision layers."""
-
     BENIGN_READ = "benign_read"
     READ_SECRET = "read_secret"
     FILE_WRITE = "file_write"
     NETWORK_SEND = "network_send"
     STATE_CHANGE = "state_change"
     HIDDEN_INVOCATION = "hidden_invocation"
+    CREDENTIAL_ACCESS = "credential_access"
+    TOOLCHAIN_DELEGATION = "toolchain_delegation"
 
 
 class RiskLevel(str, Enum):
-    """Normalized risk scale for policy and decision outputs."""
-
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -100,12 +121,6 @@ class RiskLevel(str, Enum):
 
 
 class DecisionAction(str, Enum):
-    """Final enforcement actions available to runtime control plane.
-
-    Compatibility note:
-    Existing modules depend on these values.
-    """
-
     ALLOW = "allow"
     DENY = "deny"
     SANDBOX = "sandbox"
@@ -115,16 +130,12 @@ class DecisionAction(str, Enum):
 
 
 class RecommendationAction(str, Enum):
-    """Local module recommendation prior to final enforcement."""
-
     ALLOW = "allow"
     REVIEW = "review"
     BLOCK = "block"
 
 
 class IntegrityState(str, Enum):
-    """Observed integrity state of metadata/artifact snapshot."""
-
     UNKNOWN = "unknown"
     VERIFIED = "verified"
     TAMPERED = "tampered"
@@ -132,8 +143,6 @@ class IntegrityState(str, Enum):
 
 
 class CapabilityProfile(BaseModel):
-    """Structured capability decomposition for formal policy reasoning."""
-
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     actions: set[BaseActionCapability] = Field(default_factory=set)
@@ -142,91 +151,75 @@ class CapabilityProfile(BaseModel):
 
 
 class ToolMetadata(BaseModel):
-    """Stable tool identity + schema metadata.
-
-    Prototype compatibility:
-    - keeps legacy fields (`provider`, `source_uri`, `capabilities`, `tags`)
-    - adds formal identity/schema fields for stricter registry and reasoning.
-    """
-
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    # Tool identity
-    tool_id: str = Field(..., description="Global unique identifier of the tool.")
-    tool_identity: str | None = Field(
+    tool_id: str = Field(...)
+    tool_identity: str | None = Field(default=None)
+    name: str = Field(...)
+    namespace: str | None = Field(default=None)
+    version: str = Field(...)
+
+    provider: str = Field(...)
+    provider_identity: str | None = Field(default=None)
+
+    server_id: str | None = Field(default=None)
+    server_origin: str | None = Field(default=None)
+    source_uri: str | None = Field(default=None, validation_alias=AliasChoices("source_uri", "origin_uri"))
+
+    description: str = Field(...)
+    input_schema: ToolSchemaDocument | None = Field(
         default=None,
-        description="Canonical tool identity key for formal registry reasoning.",
+        description="Tool input schema document exported to JSON outputs and tests.",
     )
-    name: str = Field(..., description="Human-readable tool name.")
-    namespace: str | None = Field(
+    output_schema: ToolSchemaDocument | None = Field(
         default=None,
-        description="Logical namespace to avoid cross-domain name collisions.",
+        description="Tool output schema document exported to JSON outputs and tests.",
+    )
+    invocation_constraints: InvocationConstraintDocument | None = Field(
+        default=None,
+        description="Invocation constraints document (rate/scope/context hints).",
     )
 
-    # Versioning
-    version: str = Field(..., description="Tool version string.")
+    capabilities: set[CapabilityType] = Field(default_factory=set)
+    capability_profile: CapabilityProfile | None = Field(default=None)
+    policy_capability_labels: set[PolicyCapabilityLabel] = Field(default_factory=set)
+    tags: list[str] = Field(default_factory=list)
 
-    # Provider identity
-    provider: str = Field(..., description="Provider or vendor name (legacy compatibility).")
-    provider_identity: str | None = Field(
-        default=None,
-        description="Canonical provider identity for trust anchoring.",
-    )
+    @field_validator("tool_id", "name", "version", "provider", "description")
+    @classmethod
+    def _strip_required_strings(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("required string fields must be non-empty")
+        return value
 
-    # Server identity/origin
-    server_id: str | None = Field(
-        default=None,
-        description="Stable server identity within provider namespace.",
-    )
-    server_origin: str | None = Field(
-        default=None,
-        description="Canonical server origin used for trust-boundary decisions.",
-    )
-    source_uri: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("source_uri", "origin_uri"),
-        description="Legacy source URI for tool definition retrieval.",
-    )
+    @field_validator("source_uri", "server_origin", "provider_identity", "tool_identity", "namespace", "server_id")
+    @classmethod
+    def _strip_optional_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
-    # Functional description
-    description: str = Field(..., description="Short functional description.")
+    @field_validator("input_schema", "output_schema", "invocation_constraints", mode="before")
+    @classmethod
+    def _normalize_schema_documents(cls, value: object, info) -> JsonObject | None:
+        return _normalize_optional_json_object(value, field_name=info.field_name)
 
-    # Formal schemas (first-class fields)
-    input_schema: dict[str, object] | None = Field(
-        default=None,
-        description="Formal input schema for tool invocation.",
-    )
-    output_schema: dict[str, object] | None = Field(
-        default=None,
-        description="Formal output schema for tool response.",
-    )
-    invocation_constraints: dict[str, object] | None = Field(
-        default=None,
-        description="Formal invocation constraints (rate/scope/auth/context).",
-    )
-
-    # Legacy + structured capability representations
-    capabilities: set[CapabilityType] = Field(
-        default_factory=set,
-        description="Legacy flat capability categories exposed by this tool.",
-    )
-    capability_profile: CapabilityProfile | None = Field(
-        default=None,
-        description="Structured capability decomposition for policy/formal reasoning.",
-    )
-    policy_capability_labels: set[PolicyCapabilityLabel] = Field(
-        default_factory=set,
-        description="Normalized policy labels usable by validator/decision layers.",
-    )
-
-    tags: list[str] = Field(
-        default_factory=list,
-        description="Free-form tags for retrieval and policy grouping (legacy/auxiliary).",
-    )
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, value: object) -> list[str]:
+        normalized = _normalize_string_list(value, field_name="tags")
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for text in normalized:
+            if text not in seen:
+                seen.add(text)
+                deduped.append(text)
+        return deduped
 
     @model_validator(mode="after")
     def _backfill_identity_fields(self) -> ToolMetadata:
-        """Backfill new identity fields from legacy fields to preserve compatibility."""
         if self.tool_identity is None:
             self.tool_identity = self.tool_id
         if self.provider_identity is None:
@@ -241,67 +234,48 @@ class ToolMetadata(BaseModel):
 
 
 class ToolSnapshot(BaseModel):
-    """Point-in-time tool state for registry, validation, and policy reasoning.
-
-    Compared with prototype version, key identity/hash fields are explicit first-class
-    fields instead of primarily living in runtime_context.
-    """
-
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    snapshot_id: str = Field(..., description="Unique snapshot identifier.")
-    tool: ToolMetadata = Field(..., description="Embedded stable tool metadata.")
-    captured_at: datetime = Field(..., description="Snapshot capture timestamp.")
-
-    # Explicit identity/hash/state fields
-    description_hash: str | None = Field(default=None, description="Hash of tool description content.")
-    input_schema_hash: str | None = Field(default=None, description="Hash of normalized input schema.")
-    output_schema_hash: str | None = Field(default=None, description="Hash of normalized output schema.")
-    server_origin: str | None = Field(default=None, description="Observed server origin at capture time.")
-    observed_version: str | None = Field(default=None, description="Observed version at capture time.")
-    integrity_state: IntegrityState = Field(
-        default=IntegrityState.UNKNOWN,
-        description="Integrity status at capture time.",
-    )
-
-    # Existing fields (compatibility)
-    trust_label: TrustLabel = Field(
-        default=TrustLabel.UNKNOWN,
-        description="Current trust label at snapshot time.",
-    )
-    integrity_checksum: str | None = Field(
-        default=None,
-        description="Optional checksum over relevant tool artifacts.",
-    )
-    runtime_context: dict[str, Any] = Field(
+    snapshot_id: str = Field(...)
+    tool: ToolMetadata = Field(...)
+    captured_at: datetime = Field(...)
+    description_hash: str | None = Field(default=None)
+    input_schema_hash: str | None = Field(default=None)
+    output_schema_hash: str | None = Field(default=None)
+    server_origin: str | None = Field(default=None)
+    observed_version: str | None = Field(default=None)
+    integrity_state: IntegrityState = Field(default=IntegrityState.UNKNOWN)
+    trust_label: TrustLabel = Field(default=TrustLabel.UNKNOWN)
+    integrity_checksum: str | None = Field(default=None)
+    runtime_context: RuntimeAuditContext = Field(
         default_factory=dict,
-        description="Extended runtime attributes (auxiliary, non-canonical).",
+        description="Open runtime audit context captured alongside snapshot (JSON-serializable).",
     )
+
+    @field_validator("runtime_context", mode="before")
+    @classmethod
+    def _normalize_runtime_context(cls, value: object) -> JsonObject:
+        return _normalize_json_object(value, field_name="runtime_context")
 
     @model_validator(mode="after")
     def _backfill_explicit_snapshot_fields(self) -> ToolSnapshot:
-        """Backfill first-class snapshot fields from legacy context when needed."""
         if self.server_origin is None:
-            self.server_origin = (
-                self.runtime_context.get("server_origin")
-                or self.tool.server_origin
-                or self.tool.source_uri
-            )
+            raw_origin = self.runtime_context.get("server_origin")
+            if isinstance(raw_origin, str) and raw_origin.strip():
+                self.server_origin = raw_origin.strip()
+            else:
+                self.server_origin = self.tool.server_origin or self.tool.source_uri
         if self.observed_version is None:
             self.observed_version = str(self.runtime_context.get("version") or self.tool.version)
-
         if self.description_hash is None:
             raw = self.runtime_context.get("description_hash")
             self.description_hash = str(raw) if raw is not None else None
-
         if self.input_schema_hash is None:
             raw = self.runtime_context.get("input_schema_hash") or self.runtime_context.get("schema_hash")
             self.input_schema_hash = str(raw) if raw is not None else None
-
         if self.output_schema_hash is None:
             raw = self.runtime_context.get("output_schema_hash") or self.runtime_context.get("schema_hash")
             self.output_schema_hash = str(raw) if raw is not None else None
-
         if self.integrity_state == IntegrityState.UNKNOWN:
             raw_state = self.runtime_context.get("integrity_state")
             if isinstance(raw_state, str):
@@ -315,131 +289,89 @@ class ToolSnapshot(BaseModel):
 
 
 class ModuleAssessmentResult(BaseModel):
-    """Common structured output contract for local security modules.
-
-    Intended for metadata validator, sink guard, capability policy, and future
-    formal-policy analyzers to emit consistent recommendation objects.
-    """
-
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    module_name: str = Field(..., description="Module identifier emitting this assessment.")
-    recommendation: RecommendationAction = Field(..., description="Local recommendation from this module.")
-    risk_level: RiskLevel = Field(..., description="Module-local estimated risk.")
-    reasons: list[str] = Field(default_factory=list, description="Concise human-readable reasons.")
-    findings: list[str] = Field(default_factory=list, description="Detailed supporting findings.")
-    evidence: dict[str, Any] = Field(default_factory=dict, description="Structured evidence payload.")
+    module_name: str = Field(...)
+    recommendation: RecommendationAction = Field(...)
+    risk_level: RiskLevel = Field(...)
+    reasons: list[str] = Field(default_factory=list)
+    findings: list[str] = Field(default_factory=list)
+    evidence: ModuleEvidencePayload = Field(
+        default_factory=dict,
+        description="Open per-module evidence payload for audit/analysis (JSON-serializable).",
+    )
+
+    @field_validator("module_name")
+    @classmethod
+    def _module_name_non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("module_name must be non-empty")
+        return value
+
+    @field_validator("reasons", "findings", mode="before")
+    @classmethod
+    def _normalize_reasons_findings(cls, value: object, info) -> list[str]:
+        return _normalize_string_list(value, field_name=info.field_name)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _normalize_evidence(cls, value: object) -> JsonObject:
+        return _normalize_json_object(value, field_name="evidence")
 
 
 class DecisionResult(BaseModel):
-    """Decision engine output for a given request/tool/execution context.
-
-    Separation of concerns:
-    - `module_recommendations`: local module outputs before final merge.
-    - `action`: final enforcement action used by runtime.
-    """
-
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    decision_id: str = Field(..., description="Unique identifier for this decision record.")
-
-    # Final enforcement action (runtime authoritative)
-    action: DecisionAction = Field(..., description="Final enforcement action.")
-    enforcement_action: DecisionAction | None = Field(
-        default=None,
-        description="Explicit final enforcement action mirror for formal clarity.",
-    )
-
-    # Local recommendations
-    module_recommendations: list[ModuleAssessmentResult] = Field(
-        default_factory=list,
-        description="Module-level recommendations prior to final action merge.",
-    )
-
-    risk_level: RiskLevel = Field(..., description="Estimated aggregate risk level.")
-    trust_label: TrustLabel = Field(..., description="Trust label at decision time.")
-
-    reasons: list[str] = Field(
-        default_factory=list,
-        validation_alias=AliasChoices("reasons", "rationale"),
-        description="Human-readable reasons for the final decision action.",
-    )
-    findings: list[str] = Field(
-        default_factory=list,
-        description="Atomic findings supporting reasons and final action.",
-    )
-    confidence: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Confidence score in [0.0, 1.0].",
-    )
-    applied_policies: list[str] = Field(
-        default_factory=list,
-        description="Policy identifiers applied during evaluation.",
-    )
-    required_controls: list[str] = Field(
-        default_factory=list,
-        description="Controls required before or during execution.",
-    )
-    evidence: dict[str, Any] = Field(
+    decision_id: str = Field(...)
+    action: DecisionAction = Field(...)
+    enforcement_action: DecisionAction | None = Field(default=None)
+    module_recommendations: list[ModuleAssessmentResult] = Field(default_factory=list)
+    risk_level: RiskLevel = Field(...)
+    trust_label: TrustLabel = Field(...)
+    reasons: list[str] = Field(default_factory=list, validation_alias=AliasChoices("reasons", "rationale"))
+    findings: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    applied_policies: list[str] = Field(default_factory=list)
+    required_controls: list[str] = Field(default_factory=list)
+    evidence: DecisionEvidencePayload = Field(
         default_factory=dict,
-        description="Structured evidence supporting the final action.",
+        description="Open merged decision evidence payload for export and reproducibility.",
     )
 
     @field_validator("reasons", mode="before")
     @classmethod
-    def _normalize_reasons(cls, value: Any) -> list[str]:
-        """Normalize legacy single-string rationale into list-based reasons."""
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        return value
+    def _normalize_reasons(cls, value: object) -> list[str]:
+        return _normalize_string_list(value, field_name="reasons")
+
+    @field_validator("findings", "applied_policies", "required_controls", mode="before")
+    @classmethod
+    def _normalize_string_list_fields(cls, value: object, info) -> list[str]:
+        return _normalize_string_list(value, field_name=info.field_name)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _normalize_decision_evidence(cls, value: object) -> JsonObject:
+        return _normalize_json_object(value, field_name="evidence")
 
     @model_validator(mode="after")
     def _backfill_enforcement_action(self) -> DecisionResult:
-        """Keep explicit enforcement field aligned with legacy `action` field."""
         if self.enforcement_action is None:
             self.enforcement_action = self.action
         return self
 
 
 class AttackCase(BaseModel):
-    """Structured attack case for adversarial evaluation and benchmarking."""
-
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    case_id: str = Field(..., description="Unique attack case identifier.")
-    title: str = Field(..., description="Short attack case title.")
-    description: str = Field(..., description="Attack case narrative description.")
-    preconditions: list[str] = Field(
-        default_factory=list,
-        description="Preconditions required before the attack can succeed.",
-    )
-    attack_steps: list[str] = Field(
-        default_factory=list,
-        description="Ordered attacker action steps.",
-    )
-    mapped_capabilities: set[CapabilityType] = Field(
-        default_factory=set,
-        description="Capabilities exercised by this attack path.",
-    )
-    normalized_policy_labels: set[PolicyCapabilityLabel] = Field(
-        default_factory=set,
-        description="Normalized policy labels exercised by this attack path.",
-    )
-    risk_level: RiskLevel = Field(
-        ...,
-        validation_alias=AliasChoices("risk_level", "estimated_risk"),
-        description="Estimated risk severity.",
-    )
-    expected_impact: str = Field(..., description="Expected impact if attack succeeds.")
-    mitigations: list[str] = Field(
-        default_factory=list,
-        description="Candidate mitigations for this attack case.",
-    )
-    references: list[str] = Field(
-        default_factory=list,
-        description="References such as papers, reports, or issue links.",
-    )
+    case_id: str = Field(...)
+    title: str = Field(...)
+    description: str = Field(...)
+    preconditions: list[str] = Field(default_factory=list)
+    attack_steps: list[str] = Field(default_factory=list)
+    mapped_capabilities: set[CapabilityType] = Field(default_factory=set)
+    normalized_policy_labels: set[PolicyCapabilityLabel] = Field(default_factory=set)
+    risk_level: RiskLevel = Field(..., validation_alias=AliasChoices("risk_level", "estimated_risk"))
+    expected_impact: str = Field(...)
+    mitigations: list[str] = Field(default_factory=list)
+    references: list[str] = Field(default_factory=list)

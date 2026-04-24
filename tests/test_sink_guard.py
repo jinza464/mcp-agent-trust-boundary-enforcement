@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from app.core.models import DecisionAction, RiskLevel
-from app.sink.sink_guard import inspect_sink
+from app.core.models import DecisionAction, RiskLevel, TrustLabel
+from app.mcp.protocol_models import RequestLineage
+from app.policy.capability_policy import CapabilityClassificationResult, PolicyCapability
+from app.sink.sink_guard import SinkDecisionContext, inspect_sink, inspect_sink_with_context
 
 
 def test_normal_low_risk_local_output_allow() -> None:
@@ -93,11 +95,7 @@ def test_fragmented_leakage_denied() -> None:
 def test_staged_exfiltration_denied() -> None:
     result = inspect_sink(
         planned_action="network_send",
-        payload={
-            "stage_1": "diag-a",
-            "stage_2": "diag-b",
-            "sequence_id": "seq-77",
-        },
+        payload={"stage_1": "diag-a", "stage_2": "diag-b", "sequence_id": "seq-77"},
         metadata={"endpoint": "https://collector.example.com/callback", "sink_type": "network_send"},
     )
     assert result.action == DecisionAction.DENY
@@ -178,3 +176,95 @@ def test_state_changing_action_requires_confirmation() -> None:
     )
     assert result.action == DecisionAction.REQUIRE_CONFIRMATION
     assert result.risk_level == RiskLevel.MEDIUM
+
+
+def test_lineage_untrusted_upstream_external_network_context_is_reflected() -> None:
+    request_lineage = RequestLineage(
+        request_id="r-1",
+        parent_request_id=None,
+        root_user_request_id="root-r-1",
+        source_role="client",
+        feature="tools",
+        trust_label=TrustLabel.UNTRUSTED,
+    )
+    result = inspect_sink_with_context(
+        SinkDecisionContext(
+            decision_action="network_send",
+            request_lineage=request_lineage,
+            upstream_trust_label=TrustLabel.UNTRUSTED,
+            payload={"event": "build_done"},
+            sink_metadata={"sink_type": "network_send", "endpoint": "https://external.example/upload"},
+        )
+    )
+    assert result.action in {DecisionAction.REQUIRE_CONFIRMATION, DecisionAction.DENY}
+    assert any("untrusted upstream" in item.lower() for item in [*result.findings, *result.blocked_reasons]) or (
+        "lineage_untrusted_upstream_payload" in result.sink_risk_factors
+    )
+
+
+def test_lineage_delegated_external_context_increases_sink_attention() -> None:
+    request_lineage = RequestLineage(
+        request_id="r-2",
+        parent_request_id=None,
+        root_user_request_id="root-r-2",
+        source_role="client",
+        feature="tools",
+        trust_label=TrustLabel.SEMI_TRUSTED,
+    )
+    capability_result = CapabilityClassificationResult(
+        detected_capabilities=[PolicyCapability.TOOLCHAIN_DELEGATION, PolicyCapability.NETWORK_EGRESS],
+        risk_level=RiskLevel.HIGH,
+        findings=[],
+        structured_findings=[],
+    )
+    result = inspect_sink_with_context(
+        SinkDecisionContext(
+            decision_action="network_send",
+            request_lineage=request_lineage,
+            upstream_trust_label=TrustLabel.SEMI_TRUSTED,
+            capability_result=capability_result,
+            payload={"event": "status"},
+            sink_metadata={"sink_type": "network_send", "endpoint": "https://hooks.example.com/callback"},
+        )
+    )
+    assert result.action in {DecisionAction.REQUIRE_CONFIRMATION, DecisionAction.DENY}
+    assert "lineage_delegated_external_sink" in result.sink_risk_factors or any(
+        "delegated" in item.lower() or "hidden invocation" in item.lower()
+        for item in [*result.findings, *result.blocked_reasons]
+    )
+
+
+def test_state_change_user_authorized_but_untrusted_lineage_not_fully_relaxed() -> None:
+    request_lineage = RequestLineage(
+        request_id="r-3",
+        parent_request_id=None,
+        root_user_request_id="root-r-3",
+        source_role="client",
+        feature="tools",
+        trust_label=TrustLabel.UNTRUSTED,
+    )
+    result = inspect_sink_with_context(
+        SinkDecisionContext(
+            decision_action="state_change",
+            request_lineage=request_lineage,
+            upstream_trust_label=TrustLabel.UNTRUSTED,
+            payload={"operation": "update_policy"},
+            sink_metadata={"sink_type": "state_change", "user_authorized": True},
+        )
+    )
+    assert result.action != DecisionAction.ALLOW
+    assert result.action in {DecisionAction.REQUIRE_CONFIRMATION, DecisionAction.DENY}
+    assert any("authorization lineage" in item.lower() or "untrusted upstream" in item.lower() for item in [*result.findings, *result.blocked_reasons]) or (
+        "state_change_untrusted_authorization_chain" in result.sink_risk_factors
+        or "state_change_untrusted_upstream" in result.sink_risk_factors
+    )
+
+
+def test_inspect_sink_legacy_entrypoint_still_works_after_context_upgrade() -> None:
+    legacy = inspect_sink(
+        planned_action="network_send",
+        payload={"event": "build_completed"},
+        metadata={"sink_type": "network_send", "endpoint": "https://hooks.example.com/callback"},
+    )
+    assert legacy.action == DecisionAction.REQUIRE_CONFIRMATION
+    assert legacy.endpoint_class == "external"

@@ -37,3 +37,9 @@ This repository contains a minimal runnable Python + FastAPI prototype scaffold 
 4. Verify endpoints:
 - Health check: `http://127.0.0.1:8000/health`
 - Swagger UI: `http://127.0.0.1:8000/docs`
+
+## Research Prototype Status
+
+This repository is currently sealed as a thesis experiment baseline for an MCP-enabled LLM agent client-side trust boundary enforcement research prototype. The current baseline includes tightened data boundaries, MCP protocol objects, evidence-tree policy decisions, unified runtime/eval semantics, service-layer consolidation, and final prototype capability completion.
+
+Experiment scope and capability boundaries are documented in `docs/experiment_scope.md`. The thesis experiment readiness checklist is documented in `docs/thesis_experiment_ready_checklist.md`.

@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.models import DecisionAction, RiskLevel
+from app.core.models import DecisionAction, RiskLevel, TrustLabel
 
 
 class SinkInspectionResult(BaseModel):
@@ -20,44 +20,100 @@ class SinkInspectionResult(BaseModel):
     action: DecisionAction = Field(..., description="Final sink control action.")
     risk_level: RiskLevel = Field(..., description="Sink risk level.")
     findings: list[str] = Field(default_factory=list, description="Human-readable sink findings.")
-    blocked_reasons: list[str] = Field(
-        default_factory=list,
-        description="Reasons that block direct execution without guard intervention.",
-    )
-    requires_user_confirmation: bool = Field(
-        default=False,
-        description="Whether explicit user confirmation is required.",
-    )
-    endpoint_class: str = Field(
-        default="unknown",
-        description="Endpoint class: internal / allowlisted / external / unknown.",
-    )
-    sensitive_payload_signals: list[str] = Field(
-        default_factory=list,
-        description="Detected sensitivity signals from payload/content reasoning.",
-    )
-    sink_risk_factors: list[str] = Field(
-        default_factory=list,
-        description="Explicit sink risk factors used in decision.",
-    )
-    fragment_suspicion: bool = Field(
-        default=False,
-        description="Whether payload shows fragment/chunk-style suspicious leakage signal.",
-    )
-    staged_exfil_signals: list[str] = Field(
-        default_factory=list,
-        description="Structured staged-outbound/exfiltration signals.",
-    )
-    payload_sensitivity_class: str = Field(
-        default="low",
-        description="Payload sensitivity class: low / suspicious / sensitive.",
-    )
+    blocked_reasons: list[str] = Field(default_factory=list, description="Reasons that block direct execution.")
+    requires_user_confirmation: bool = Field(default=False)
+    endpoint_class: str = Field(default="unknown", description="internal / allowlisted / external / unknown.")
+    sensitive_payload_signals: list[str] = Field(default_factory=list)
+    sink_risk_factors: list[str] = Field(default_factory=list)
+    fragment_suspicion: bool = Field(default=False)
+    staged_exfil_signals: list[str] = Field(default_factory=list)
+    payload_sensitivity_class: str = Field(default="low", description="low / suspicious / sensitive.")
+
+
+class SinkDecisionContext(BaseModel):
+    """Lineage-aware sink decision context used by inspect_sink_with_context()."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_lineage: dict[str, Any] | BaseModel | None = Field(default=None)
+    upstream_trust_label: TrustLabel | str | None = Field(default=None)
+    decision_action: DecisionAction | str = Field(...)
+    capability_result: Any | None = Field(default=None)
+    payload: Any = Field(default=None)
+    sink_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def _normalize_planned_action(planned_action: DecisionAction | str) -> str:
     if isinstance(planned_action, DecisionAction):
         return planned_action.value.lower()
     return str(planned_action).strip().lower()
+
+
+def _risk_rank(level: RiskLevel) -> int:
+    return {RiskLevel.LOW: 1, RiskLevel.MEDIUM: 2, RiskLevel.HIGH: 3, RiskLevel.CRITICAL: 4}[level]
+
+
+def _escalate_to_confirmation(action: DecisionAction, risk_level: RiskLevel, minimum_risk: RiskLevel) -> tuple[DecisionAction, RiskLevel]:
+    if action == DecisionAction.DENY:
+        return action, risk_level
+    next_action = DecisionAction.REQUIRE_CONFIRMATION
+    next_risk = minimum_risk if _risk_rank(risk_level) < _risk_rank(minimum_risk) else risk_level
+    return next_action, next_risk
+
+
+def _normalize_trust_label(value: TrustLabel | str | None) -> TrustLabel | None:
+    if isinstance(value, TrustLabel):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        for item in TrustLabel:
+            if normalized == item.value:
+                return item
+    return None
+
+
+def _context_field(obj: dict[str, Any] | BaseModel | None, key: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _lineage_trust_label(request_lineage: dict[str, Any] | BaseModel | None) -> TrustLabel | None:
+    return _normalize_trust_label(_context_field(request_lineage, "trust_label"))
+
+
+def _lineage_feature_scope(request_lineage: dict[str, Any] | BaseModel | None) -> str | None:
+    value = _context_field(request_lineage, "feature")
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized or None
+    return None
+
+
+def _capability_tokens(capability_result: Any) -> set[str]:
+    if capability_result is None:
+        return set()
+
+    detected = None
+    if isinstance(capability_result, dict):
+        detected = capability_result.get("detected_capabilities")
+    else:
+        detected = getattr(capability_result, "detected_capabilities", None)
+
+    tokens: set[str] = set()
+    if isinstance(detected, (list, tuple, set)):
+        for item in detected:
+            if isinstance(item, str):
+                tokens.add(item.strip().lower())
+            else:
+                value = getattr(item, "value", None)
+                if isinstance(value, str):
+                    tokens.add(value.strip().lower())
+                else:
+                    tokens.add(str(item).strip().lower())
+    return tokens
 
 
 def _flatten_payload(payload: Any) -> str:
@@ -70,34 +126,21 @@ def _flatten_payload(payload: Any) -> str:
 
 
 def _contains_sensitive_content(text: str) -> bool:
-    negation_markers = [
-        "no secret",
+    normalized = text
+    for marker in (
         "no secrets",
-        "without secret",
+        "no secret",
         "without secrets",
+        "without secret",
         "no token",
         "without token",
         "no password",
         "without password",
-    ]
-    if any(marker in text for marker in negation_markers):
-        # Avoid obvious false positives such as "no secrets in payload".
-        text = text.replace("no secrets", "").replace("no secret", "")
-        text = text.replace("without secrets", "").replace("without secret", "")
-        text = text.replace("no token", "").replace("without token", "")
-        text = text.replace("no password", "").replace("without password", "")
+    ):
+        normalized = normalized.replace(marker, "")
 
-    keyword_hits = [
-        "token",
-        "password",
-        "api key",
-        "apikey",
-        "secret",
-        "credential",
-        "private_key",
-        "bearer ",
-    ]
-    if any(token in text for token in keyword_hits):
+    keyword_hits = ["token", "password", "api key", "apikey", "secret", "credential", "private_key", "bearer "]
+    if any(token in normalized for token in keyword_hits):
         return True
 
     regexes = [
@@ -106,7 +149,7 @@ def _contains_sensitive_content(text: str) -> bool:
         r"token\s*[:=]\s*[^\s,;]+",
         r"bearer\s+[a-z0-9\-\._~\+\/]+=*",
     ]
-    return any(re.search(pattern, text) for pattern in regexes)
+    return any(re.search(pattern, normalized) for pattern in regexes)
 
 
 def _extract_endpoint(metadata: dict[str, Any], payload_text: str) -> str | None:
@@ -153,40 +196,14 @@ def _classify_endpoint(endpoint: str | None, metadata: dict[str, Any]) -> str:
     if parsed.scheme and parsed.scheme not in {"http", "https"}:
         return "unknown"
 
-    allowlisted = {
-        _extract_domain(str(item).lower())
-        for item in metadata.get("allowlisted_domains", [])
-        if isinstance(item, str)
-    }
-    allowlisted_endpoints = {
-        str(item).lower()
-        for item in metadata.get("allowlisted_endpoints", [])
-        if isinstance(item, str)
-    }
-    internal_domains = {
-        _extract_domain(str(item).lower())
-        for item in metadata.get("internal_domains", [])
-        if isinstance(item, str)
-    }
-    internal_markers = [
-        ".internal",
-        ".intra",
-        ".corp",
-        ".local",
-        "localhost",
-    ]
-    if (
-        endpoint.lower() in allowlisted_endpoints
-        or host in allowlisted
-        or any(host.endswith(f".{domain}") for domain in allowlisted if domain)
-    ):
+    allowlisted = {_extract_domain(str(item).lower()) for item in metadata.get("allowlisted_domains", []) if isinstance(item, str)}
+    allowlisted_endpoints = {str(item).lower() for item in metadata.get("allowlisted_endpoints", []) if isinstance(item, str)}
+    internal_domains = {_extract_domain(str(item).lower()) for item in metadata.get("internal_domains", []) if isinstance(item, str)}
+    internal_markers = [".internal", ".intra", ".corp", ".local", "localhost"]
+
+    if endpoint.lower() in allowlisted_endpoints or host in allowlisted or any(host.endswith(f".{d}") for d in allowlisted if d):
         return "allowlisted"
-    if (
-        host in internal_domains
-        or any(host.endswith(f".{domain}") for domain in internal_domains if domain)
-        or _is_private_ipv4(host)
-        or any(marker in host for marker in internal_markers)
-    ):
+    if host in internal_domains or any(host.endswith(f".{d}") for d in internal_domains if d) or _is_private_ipv4(host) or any(marker in host for marker in internal_markers):
         return "internal"
     return "external"
 
@@ -195,24 +212,21 @@ def _is_sensitive_path(path: str | None) -> bool:
     if not path:
         return False
     normalized = path.lower()
-    markers = ["credential", "config", "system", ".env", "token", "secret", "passwd"]
-    return any(marker in normalized for marker in markers)
+    return any(marker in normalized for marker in ["credential", "config", "system", ".env", "token", "secret", "passwd"])
 
 
 def _find_base64_like_tokens(text: str) -> list[str]:
-    # Heuristic: long base64/url-safe-ish segments that often hide exfil data.
     pattern = r"\b[A-Za-z0-9+/=_-]{24,}\b"
-    output: list[str] = []
+    tokens: list[str] = []
     for token in re.findall(pattern, text):
         if len(set(token)) < 6:
             continue
         if re.fullmatch(r"[0-9a-f-]{24,}", token):
-            # Ignore likely hashes/UUID-like low-signal tokens.
             continue
         if not (re.search(r"[A-Za-z]", token) and re.search(r"\d", token)):
             continue
-        output.append(token)
-    return output
+        tokens.append(token)
+    return tokens
 
 
 def _sensitivity_signals(payload: Any, payload_text: str) -> list[str]:
@@ -229,7 +243,6 @@ def _sensitivity_signals(payload: Any, payload_text: str) -> list[str]:
     if _find_base64_like_tokens(payload_text):
         signals.append("obfuscated_payload_pattern")
 
-    # Fragmented leakage heuristics: chunk/part fields with high-entropy like values.
     if isinstance(payload, dict):
         keys = {str(k).lower() for k in payload.keys()}
         if {"chunk", "part", "fragment", "segment"}.intersection(keys):
@@ -264,12 +277,7 @@ def _payload_sensitivity_class(signals: list[str]) -> str:
     return "low"
 
 
-def _staged_exfil_signals(
-    *,
-    endpoint_class: str,
-    endpoint: str | None,
-    signals: list[str],
-) -> list[str]:
+def _staged_exfil_signals(*, endpoint_class: str, endpoint: str | None, signals: list[str]) -> list[str]:
     output: list[str] = []
     for marker in ("fragmented_payload_marker", "fragment_chunk_high_entropy", "staged_transfer_marker", "obfuscated_payload_pattern"):
         if marker in signals:
@@ -284,7 +292,7 @@ def _staged_exfil_signals(
         output.append("allowlisted_endpoint")
     elif endpoint_class == "internal":
         output.append("internal_endpoint")
-    elif endpoint_class == "unknown":
+    else:
         output.append("unknown_endpoint")
     return list(dict.fromkeys(output))
 
@@ -305,31 +313,16 @@ def _is_trusted_internal_sync(
         return False
     if obfuscated_marker:
         return False
-    trust_hints = (
-        bool(metadata.get("integrity_verified"))
-        or bool(metadata.get("signature_valid"))
-        or bool(metadata.get("is_local"))
-        or bool(metadata.get("trusted_internal"))
-    )
-    telemetry_markers = [
-        "sync",
-        "heartbeat",
-        "metrics",
-        "uptime",
-        "status",
-        "health",
-    ]
-    telemetry_like = any(marker in payload_text for marker in telemetry_markers)
+    trust_hints = bool(metadata.get("integrity_verified")) or bool(metadata.get("signature_valid")) or bool(metadata.get("is_local")) or bool(metadata.get("trusted_internal"))
+    telemetry_like = any(marker in payload_text for marker in ["sync", "heartbeat", "metrics", "uptime", "status", "health"])
     if staged_marker or fragment_suspicion:
-        # For internal sync, staged/chunk markers are tolerated only with explicit trust hints.
         return trust_hints and telemetry_like
     return trust_hints or telemetry_like
 
 
 def _is_benign_report_path(path: str) -> bool:
     normalized = path.lower()
-    benign_markers = ["report", "summary", "output", "results", "logs"]
-    return any(marker in normalized for marker in benign_markers) and not _is_sensitive_path(path)
+    return any(marker in normalized for marker in ["report", "summary", "output", "results", "logs"]) and not _is_sensitive_path(path)
 
 
 def inspect_sink(
@@ -337,15 +330,29 @@ def inspect_sink(
     payload: Any,
     metadata: dict[str, Any] | None = None,
 ) -> SinkInspectionResult:
-    """Inspect sink execution and return a structured enforcement decision."""
-    meta = metadata or {}
-    action_name = _normalize_planned_action(planned_action)
+    """Backward-compatible sink inspection entrypoint."""
+    return inspect_sink_with_context(
+        SinkDecisionContext(
+            decision_action=planned_action,
+            payload=payload,
+            sink_metadata=metadata or {},
+        )
+    )
+
+
+def inspect_sink_with_context(context: SinkDecisionContext | dict[str, Any]) -> SinkInspectionResult:
+    """Inspect sink execution with optional lineage-aware runtime context."""
+    ctx = context if isinstance(context, SinkDecisionContext) else SinkDecisionContext.model_validate(context)
+    meta = ctx.sink_metadata or {}
+    payload = ctx.payload
+    action_name = _normalize_planned_action(ctx.decision_action)
     payload_text = _flatten_payload(payload)
     sink_type = str(meta.get("sink_type", action_name)).lower()
 
     findings: list[str] = []
     blocked_reasons: list[str] = []
     sink_risk_factors: list[str] = []
+
     action = DecisionAction.ALLOW
     risk_level = RiskLevel.LOW
 
@@ -360,15 +367,11 @@ def inspect_sink(
     sensitive_signals = _sensitivity_signals(payload, payload_text)
     has_any_sensitivity_signal = bool(sensitive_signals)
     staged_marker = "staged_transfer_marker" in sensitive_signals
-    fragmented_marker = any(item in sensitive_signals for item in ["fragmented_payload_marker", "fragment_chunk_high_entropy"])
+    fragmented_marker = any(item in sensitive_signals for item in {"fragmented_payload_marker", "fragment_chunk_high_entropy"})
     obfuscated_marker = "obfuscated_payload_pattern" in sensitive_signals
     fragment_suspicion = fragmented_marker or (obfuscated_marker and staged_marker)
     payload_sensitivity_class = _payload_sensitivity_class(sensitive_signals)
-    staged_signals = _staged_exfil_signals(
-        endpoint_class=endpoint_class,
-        endpoint=endpoint,
-        signals=sensitive_signals,
-    )
+    staged_signals = _staged_exfil_signals(endpoint_class=endpoint_class, endpoint=endpoint, signals=sensitive_signals)
     trusted_internal_sync = _is_trusted_internal_sync(
         endpoint_class=endpoint_class,
         metadata=meta,
@@ -379,17 +382,36 @@ def inspect_sink(
         obfuscated_marker=obfuscated_marker,
     )
 
+    lineage_trust_label = _lineage_trust_label(ctx.request_lineage)
+    upstream_trust_label = _normalize_trust_label(ctx.upstream_trust_label)
+    lineage_feature = _lineage_feature_scope(ctx.request_lineage)
+    capability_tokens = _capability_tokens(ctx.capability_result)
+    payload_dict = payload if isinstance(payload, dict) else {}
+    explicit_untrusted_derivation = (
+        bool(meta.get("derived_from_untrusted_content"))
+        or bool(payload_dict.get("derived_from_untrusted_content"))
+    )
+    derived_from_untrusted_upstream = (
+        explicit_untrusted_derivation
+        or upstream_trust_label == TrustLabel.UNTRUSTED
+        or lineage_trust_label == TrustLabel.UNTRUSTED
+    )
+
+    delegated_or_hidden_context = bool(
+        {"toolchain_delegation", "hidden_invocation", "mcp_invoke", "delegate", "orchestration"}.intersection(capability_tokens)
+        or bool(meta.get("delegated_invocation"))
+        or bool(meta.get("hidden_invocation"))
+    )
+    external_resource_context = bool(
+        {"network_send", "network_egress"}.intersection(capability_tokens)
+        or bool(meta.get("external_resource"))
+        or endpoint_class == "external"
+    )
+
     if is_network_sink:
         findings.append("Detected network send sink.")
-        if endpoint_class == "internal":
-            findings.append("Endpoint classified as internal.")
-        elif endpoint_class == "allowlisted":
-            findings.append("Endpoint classified as allowlisted.")
-        elif endpoint_class == "external":
-            findings.append("Endpoint classified as external.")
-
-        # Keep hard deny for explicit secret leaks.
-        if "explicit_secret_marker" in sensitive_signals and endpoint_class in {"external", "allowlisted", "internal", "unknown"}:
+        findings.append(f"Endpoint classified as {endpoint_class}.")
+        if "explicit_secret_marker" in sensitive_signals:
             action = DecisionAction.DENY
             risk_level = RiskLevel.CRITICAL
             blocked_reasons.append("Sensitive secret/token/password content detected in outbound payload.")
@@ -415,8 +437,7 @@ def inspect_sink(
             blocked_reasons.append("Outbound traffic with unknown endpoint requires explicit confirmation.")
             sink_risk_factors.append("unknown_endpoint_egress")
         elif endpoint_class in {"internal", "allowlisted"}:
-            # Internal/allowlisted sync is allowed unless suspicious staged signals indicate elevated risk.
-            if payload_sensitivity_class == "sensitive" and action != DecisionAction.DENY:
+            if payload_sensitivity_class == "sensitive":
                 action = DecisionAction.REQUIRE_CONFIRMATION
                 risk_level = RiskLevel.HIGH
                 blocked_reasons.append("Sensitive payload to non-external endpoint requires confirmation.")
@@ -438,14 +459,13 @@ def inspect_sink(
         findings.append("Detected file write sink.")
         target_path = str(meta.get("path") or meta.get("file_path") or meta.get("target_path") or "")
         if _is_sensitive_path(target_path):
-            if action != DecisionAction.DENY:
-                action = DecisionAction.REQUIRE_CONFIRMATION
+            action = DecisionAction.REQUIRE_CONFIRMATION if action != DecisionAction.DENY else action
             risk_level = RiskLevel.HIGH if risk_level != RiskLevel.CRITICAL else risk_level
             blocked_reasons.append("Write target is a sensitive path (credential/config/system/.env/token).")
             sink_risk_factors.append("sensitive_config_path_write")
         elif target_path and _is_benign_report_path(target_path):
             findings.append("Write target looks like benign report/output path.")
-        elif target_path and any(seg in target_path.lower() for seg in ["tmp", "temp", "cache"]):
+        elif target_path and any(seg in target_path.lower() for seg in {"tmp", "temp", "cache"}):
             findings.append("Write target is temporary/local workspace path.")
 
     if is_secret_read_sink:
@@ -457,8 +477,8 @@ def inspect_sink(
         findings.append("Detected credential access sink.")
         operation = str(meta.get("operation", "")).lower()
         if operation in {"list_aliases", "health_check", "status"} and action == DecisionAction.ALLOW:
-            risk_level = RiskLevel.MEDIUM
             action = DecisionAction.REQUIRE_CONFIRMATION
+            risk_level = RiskLevel.MEDIUM
             blocked_reasons.append("Credential system metadata access requires confirmation.")
             sink_risk_factors.append("credential_metadata_access")
         elif action != DecisionAction.DENY:
@@ -471,7 +491,7 @@ def inspect_sink(
         findings.append("Detected state-changing sink.")
         operation = str(meta.get("operation") or payload_text).lower()
         user_authorized = bool(meta.get("user_authorized", False))
-        destructive = any(item in operation for item in ["delete", "revoke", "disable", "drop"])
+        destructive = any(item in operation for item in {"delete", "revoke", "disable", "drop"})
         if destructive and not user_authorized and action != DecisionAction.DENY:
             action = DecisionAction.REQUIRE_CONFIRMATION
             risk_level = RiskLevel.HIGH if risk_level != RiskLevel.CRITICAL else risk_level
@@ -483,7 +503,46 @@ def inspect_sink(
             blocked_reasons.append("State-changing operation requires explicit user confirmation.")
             sink_risk_factors.append("state_change_requires_confirmation")
 
-    requires_user_confirmation = action == DecisionAction.REQUIRE_CONFIRMATION
+    # Lineage-aware additive controls (do not replace existing sink heuristics).
+    if derived_from_untrusted_upstream:
+        findings.append("Lineage context indicates payload derived from untrusted upstream content.")
+        sink_risk_factors.append("lineage_untrusted_upstream_payload")
+        if is_network_sink and action != DecisionAction.DENY:
+            target_risk = RiskLevel.HIGH if endpoint_class in {"external", "unknown"} else RiskLevel.MEDIUM
+            action, risk_level = _escalate_to_confirmation(action, risk_level, target_risk)
+            blocked_reasons.append("Outbound sink payload derived from untrusted upstream content requires confirmation.")
+        elif is_state_change_sink and action != DecisionAction.DENY:
+            action, risk_level = _escalate_to_confirmation(action, risk_level, RiskLevel.HIGH)
+            blocked_reasons.append("State-changing sink derived from untrusted upstream content requires confirmation.")
+            sink_risk_factors.append("state_change_untrusted_upstream")
+
+    if is_network_sink and delegated_or_hidden_context and external_resource_context and action != DecisionAction.DENY:
+        findings.append("Delegated/hidden invocation context combined with external sink signal.")
+        sink_risk_factors.append("lineage_delegated_external_sink")
+        target_risk = RiskLevel.HIGH if endpoint_class in {"external", "unknown"} else RiskLevel.MEDIUM
+        action, risk_level = _escalate_to_confirmation(action, risk_level, target_risk)
+        blocked_reasons.append("Delegated/hidden invocation context raises sink confirmation requirement.")
+
+    if is_state_change_sink:
+        user_authorized = bool(meta.get("user_authorized", False))
+        explicit_auth_chain = meta.get("authorization_chain_trusted")
+        trusted_authorization_chain = (
+            (explicit_auth_chain is True)
+            or (
+                user_authorized
+                and (upstream_trust_label in {TrustLabel.TRUSTED, TrustLabel.SEMI_TRUSTED})
+                and (lineage_trust_label in {TrustLabel.TRUSTED, TrustLabel.SEMI_TRUSTED, None})
+            )
+        )
+        if user_authorized and not trusted_authorization_chain and action != DecisionAction.DENY:
+            findings.append("State-change authorization lacks trusted lineage chain.")
+            sink_risk_factors.append("state_change_untrusted_authorization_chain")
+            action, risk_level = _escalate_to_confirmation(action, risk_level, RiskLevel.MEDIUM)
+            blocked_reasons.append("State-changing operation requires trusted authorization lineage or explicit reconfirmation.")
+
+    if lineage_feature and lineage_feature != "tools":
+        findings.append(f"Lineage feature scope={lineage_feature} provided for sink inspection context.")
+
     if not findings:
         findings.append("No high-risk sink signal detected.")
 
@@ -492,7 +551,7 @@ def inspect_sink(
         risk_level=risk_level,
         findings=findings,
         blocked_reasons=blocked_reasons,
-        requires_user_confirmation=requires_user_confirmation,
+        requires_user_confirmation=action == DecisionAction.REQUIRE_CONFIRMATION,
         endpoint_class=endpoint_class,
         sensitive_payload_signals=sensitive_signals,
         sink_risk_factors=sorted(set(sink_risk_factors)),

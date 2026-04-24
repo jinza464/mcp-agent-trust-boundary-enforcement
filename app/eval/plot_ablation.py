@@ -68,6 +68,7 @@ def plot_ablation(
 
     security_path = out_dir / "ablation_security_comparison.png"
     utility_path = out_dir / "ablation_utility_comparison.png"
+    execution_path = out_dir / "ablation_execution_comparison.png"
 
     _plot_grouped_bar(
         rows,
@@ -81,14 +82,26 @@ def plot_ablation(
         title="Ablation Utility Comparison",
         output_path=utility_path,
     )
+    if all(any(metric in row for row in rows) for metric in ["execution_completion_rate", "intervention_rate", "hard_block_rate"]):
+        _plot_grouped_bar(
+            rows,
+            metrics=["execution_completion_rate", "intervention_rate", "hard_block_rate"],
+            title="Ablation Execution Comparison",
+            output_path=execution_path,
+        )
 
-    return {"security_figure": security_path, "utility_figure": utility_path}
+    outputs = {"security_figure": security_path, "utility_figure": utility_path}
+    if execution_path.exists():
+        outputs["execution_figure"] = execution_path
+    return outputs
 
 
 def main() -> None:
     outputs = plot_ablation()
     print(f"security_figure: {outputs['security_figure']}")
     print(f"utility_figure: {outputs['utility_figure']}")
+    if "execution_figure" in outputs:
+        print(f"execution_figure: {outputs['execution_figure']}")
 
 
 if __name__ == "__main__":

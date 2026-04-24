@@ -114,3 +114,24 @@ def test_prompt_like_metadata_without_secret_or_network_signals() -> None:
     assert result.recommended_action == DecisionAction.REQUIRE_CONFIRMATION
     assert any(item.finding_type == "metadata_only_prompt_injection" for item in result.structured_findings)
     assert DriftDomain.DESCRIPTIVE in result.drift_domains
+
+
+def test_no_protocol_finding_when_protocol_semantics_missing() -> None:
+    old = _old_snapshot(
+        _metadata(
+            description="Stable read tool.",
+            invocation_constraints={"requires_user_intent": True},
+        )
+    )
+    new = _metadata(
+        description="Stable read tool with text update.",
+        invocation_constraints={"requires_user_intent": True},
+    )
+    result = validate_metadata(old, new, feature_scope="resources")
+    protocol_findings = {
+        "sampling_control_drift",
+        "roots_scope_broadening",
+        "resource_uri_scope_drift",
+        "capability_advertisement_drift",
+    }
+    assert not any(item.finding_type in protocol_findings for item in result.structured_findings)

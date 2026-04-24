@@ -4,9 +4,22 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.models import CapabilityType, DecisionAction, RiskLevel, ToolMetadata, ToolSnapshot, TrustLabel
+
+
+CASE_FAMILIES: set[str] = {
+    "general",
+    "core_attack",
+    "metadata_drift_security",
+    "sink_exfiltration_security",
+    "gray_zone_benign",
+    "benign_baseline",
+    "adaptive_adversary",
+}
+
+DIFFICULTY_LEVELS: set[str] = {"low", "medium", "high"}
 
 
 class EvalSinkPlan(BaseModel):
@@ -59,6 +72,32 @@ class EvalAttackCase(BaseModel):
         default="none",
         description="Main failure mode this case is designed to reveal.",
     )
+
+    @field_validator("id")
+    @classmethod
+    def _validate_case_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("case id must not be empty")
+        if not normalized.startswith("case-"):
+            raise ValueError("case id must start with 'case-'")
+        return normalized
+
+    @field_validator("difficulty")
+    @classmethod
+    def _validate_difficulty(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in DIFFICULTY_LEVELS:
+            raise ValueError(f"difficulty must be one of {sorted(DIFFICULTY_LEVELS)}")
+        return normalized
+
+    @field_validator("case_family")
+    @classmethod
+    def _validate_case_family(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in CASE_FAMILIES:
+            raise ValueError(f"case_family must be one of {sorted(CASE_FAMILIES)}")
+        return normalized
 
 
 def _snapshot_from_metadata(
@@ -1964,4 +2003,56 @@ def default_attack_cases() -> list[EvalAttackCase]:
     ]
 
     cases.extend(research_cases)
-    return _reorganize_cases(cases)
+    ordered_cases = _reorganize_cases(cases)
+    case_ids = [item.id for item in ordered_cases]
+    if len(case_ids) != len(set(case_ids)):
+        duplicates = sorted({cid for cid in case_ids if case_ids.count(cid) > 1})
+        raise ValueError(f"Duplicate case ids detected: {duplicates}")
+    return ordered_cases
+
+
+def build_case_lookup(cases: list[EvalAttackCase] | None = None) -> dict[str, EvalAttackCase]:
+    """Return a stable lookup keyed by case id for downstream analysis/tests."""
+    selected = cases or default_attack_cases()
+    return {item.id: item for item in selected}
+
+
+def get_attack_cases() -> list[EvalAttackCase]:
+    """Compatibility alias for the built-in default case pack."""
+    return default_attack_cases()
+
+
+def summarize_case_families(
+    cases: list[EvalAttackCase] | None = None,
+    *,
+    detailed: bool = False,
+) -> dict[str, int] | dict[str, object]:
+    """Return case inventory counts while preserving the historical simple output."""
+    selected = cases or default_attack_cases()
+    family_counts: dict[str, int] = {}
+    attack_type_counts: dict[str, int] = {}
+    attack_distribution = {"attack": 0, "benign": 0}
+    sink_distribution = {"sink": 0, "non_sink": 0}
+
+    for item in selected:
+        family_counts[item.case_family] = family_counts.get(item.case_family, 0) + 1
+        attack_type_counts[item.attack_type] = attack_type_counts.get(item.attack_type, 0) + 1
+        if item.is_benign:
+            attack_distribution["benign"] += 1
+        elif item.is_attack:
+            attack_distribution["attack"] += 1
+        if item.involves_sink:
+            sink_distribution["sink"] += 1
+        else:
+            sink_distribution["non_sink"] += 1
+
+    sorted_families = dict(sorted(family_counts.items()))
+    if not detailed:
+        return sorted_families
+    return {
+        "total_cases": len(selected),
+        "families": sorted_families,
+        "attack_types": dict(sorted(attack_type_counts.items())),
+        "attack_distribution": attack_distribution,
+        "sink_distribution": sink_distribution,
+    }

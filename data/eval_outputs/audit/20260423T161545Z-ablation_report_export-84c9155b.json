@@ -1,0 +1,8 @@
+{
+  "event_type": "ablation_report_export",
+  "timestamp": "2026-04-23T16:15:45.791942+00:00",
+  "payload": {
+    "json": "data\\test_outputs\\eval-svc-d5373e446d964c1b9769d6350afcc202\\custom_ablation.json",
+    "csv": "data\\test_outputs\\eval-svc-d5373e446d964c1b9769d6350afcc202\\custom_ablation.csv"
+  }
+}

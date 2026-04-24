@@ -1,32 +1,32 @@
 {
-  "total_cases": 45,
-  "matched_cases": 30,
-  "match_rate": 0.6666666666666666,
+  "total_cases": 53,
+  "matched_cases": 33,
+  "match_rate": 0.6226415094339622,
   "risk_level_distribution": {
     "critical": 9,
-    "high": 10,
-    "medium": 21,
+    "high": 12,
+    "medium": 27,
     "low": 5
   },
   "decision_action_distribution": {
     "deny": 9,
-    "require_confirmation": 10,
-    "allow": 25,
+    "require_confirmation": 12,
+    "allow": 31,
     "sandbox": 1
   },
   "sink_action_distribution": {
-    "none": 28,
-    "require_confirmation": 6,
-    "allow": 6,
-    "deny": 5
+    "none": 32,
+    "require_confirmation": 10,
+    "deny": 5,
+    "allow": 6
   },
-  "attack_success_rate": 0.14814814814814814,
-  "leak_rate": 0.29411764705882354,
+  "attack_success_rate": 0.1111111111111111,
+  "leak_rate": 0.23809523809523808,
   "escalation_rate": 0.0,
-  "false_positive_rate": 0.3333333333333333,
-  "utility_loss": 0.3333333333333333,
-  "execution_completion_rate": 0.37777777777777777,
-  "intervention_rate": 0.6444444444444445,
-  "hard_block_rate": 0.26666666666666666,
-  "confirmation_rate": 0.35555555555555557
+  "false_positive_rate": 0.4230769230769231,
+  "utility_loss": 0.4230769230769231,
+  "execution_completion_rate": 0.3584905660377358,
+  "intervention_rate": 0.660377358490566,
+  "hard_block_rate": 0.22641509433962265,
+  "confirmation_rate": 0.41509433962264153
 }

@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from app.core.models import CapabilityType, RiskLevel, ToolMetadata
+from app.core.models import CapabilityType, RiskLevel, ToolMetadata, TrustLabel
+from app.mcp.protocol_models import RequestLineage
 from app.registry.tool_registry import ToolRegistry
 
 
@@ -245,3 +246,21 @@ def test_load_tracks_json_without_new_audit_fields_compatibility() -> None:
     finally:
         if file_path.exists():
             file_path.unlink()
+
+
+def test_register_tool_with_minimal_request_lineage_compatibility() -> None:
+    registry = ToolRegistry()
+    metadata = _build_metadata()
+    lineage = RequestLineage(
+        request_id="req-lineage-1",
+        root_user_request_id="root-lineage-1",
+        source_role="client",
+        feature="tools",
+        trust_label=TrustLabel.UNKNOWN,
+    )
+
+    result = registry.register_tool(metadata, request_lineage=lineage)
+    assert result.last_seen_request_id == "req-lineage-1"
+    assert result.last_seen_session_id is None
+    assert result.feature_scope == "tools"
+    assert result.lineage_root_request_id == "root-lineage-1"

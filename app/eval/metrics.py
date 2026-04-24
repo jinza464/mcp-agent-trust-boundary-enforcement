@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.models import DecisionAction
+from app.eval.runtime_semantics import ExecutionSemantics, compute_execution_semantics
 from app.eval.runner import EvalCaseResult
 
 
@@ -64,35 +65,17 @@ def _inc(counter: dict[str, int], key: str) -> None:
     counter[key] = counter.get(key, 0) + 1
 
 
-def _fallback_intervention(item: EvalCaseResult) -> bool:
-    return item.decision_action != DecisionAction.ALLOW or item.sink_action not in {None, DecisionAction.ALLOW}
-
-
-def _fallback_completed(item: EvalCaseResult) -> bool:
-    decision_blocks = item.decision_action in {
-        DecisionAction.DENY,
-        DecisionAction.ESCALATE,
-        DecisionAction.REQUIRE_CONFIRMATION,
-    }
-    sink_blocks = item.sink_action in {DecisionAction.DENY, DecisionAction.REQUIRE_CONFIRMATION}
-    return not (decision_blocks or sink_blocks)
-
-
-def _fallback_degraded(item: EvalCaseResult) -> bool:
-    if not _fallback_completed(item):
-        return True
-    return item.decision_action in {DecisionAction.SANDBOX, DecisionAction.REDACT}
-
-
-def _fallback_hard_block(item: EvalCaseResult) -> bool:
-    return item.decision_action == DecisionAction.DENY or item.sink_action == DecisionAction.DENY
-
-
-def _fallback_confirmation(item: EvalCaseResult) -> bool:
-    return (
-        item.decision_action == DecisionAction.REQUIRE_CONFIRMATION
-        or item.sink_action == DecisionAction.REQUIRE_CONFIRMATION
+def resolve_case_semantics(item: EvalCaseResult) -> ExecutionSemantics:
+    """Resolve one normalized semantic view per case for all metric calculations."""
+    semantics = compute_execution_semantics(
+        item.decision_action,
+        item.sink_action,
+        runtime_completed_execution=item.completed_execution,
+        runtime_execution_degraded=item.execution_degraded,
     )
+    if item.intervention_triggered is not None:
+        semantics = semantics.model_copy(update={"intervention_triggered": item.intervention_triggered})
+    return semantics
 
 
 def summarize_results(results: list[EvalCaseResult]) -> EvalSummary:
@@ -113,37 +96,24 @@ def summarize_results(results: list[EvalCaseResult]) -> EvalSummary:
     attack_cases = [item for item in results if item.is_attack]
     sink_cases = [item for item in results if item.involves_sink]
     benign_cases = [item for item in results if item.is_benign]
+    semantics_by_case = {id(item): resolve_case_semantics(item) for item in results}
 
-    def intervention(item: EvalCaseResult) -> bool:
-        if item.intervention_triggered is not None:
-            return item.intervention_triggered
-        return _fallback_intervention(item)
-
-    def completed(item: EvalCaseResult) -> bool:
-        if item.completed_execution is not None:
-            return item.completed_execution
-        return _fallback_completed(item)
-
-    def degraded(item: EvalCaseResult) -> bool:
-        if item.execution_degraded is not None:
-            return item.execution_degraded
-        return _fallback_degraded(item)
-
-    attack_success_count = sum(1 for item in attack_cases if not intervention(item))
-    leak_count = sum(
-        1
-        for item in sink_cases
-        if completed(item) and item.sink_action != DecisionAction.DENY
-    )
+    attack_success_count = sum(1 for item in attack_cases if not semantics_by_case[id(item)].intervention_triggered)
+    # Leak semantics are centralized in ExecutionSemantics.leak_possible.
+    leak_count = sum(1 for item in sink_cases if semantics_by_case[id(item)].leak_possible)
     escalation_count = sum(1 for item in results if item.decision_action == DecisionAction.ESCALATE)
     # FPR: benign case with intervention signal, regardless of whether execution still completed.
-    false_positive_count = sum(1 for item in benign_cases if intervention(item))
+    false_positive_count = sum(1 for item in benign_cases if semantics_by_case[id(item)].intervention_triggered)
     # Utility loss: benign case failed completion or completed in degraded mode.
-    utility_loss_count = sum(1 for item in benign_cases if (not completed(item)) or degraded(item))
-    completion_count = sum(1 for item in results if completed(item))
-    intervention_count = sum(1 for item in results if intervention(item))
-    hard_block_count = sum(1 for item in results if _fallback_hard_block(item))
-    confirmation_count = sum(1 for item in results if _fallback_confirmation(item))
+    utility_loss_count = sum(
+        1
+        for item in benign_cases
+        if (not semantics_by_case[id(item)].completed_execution) or semantics_by_case[id(item)].execution_degraded
+    )
+    completion_count = sum(1 for item in results if semantics_by_case[id(item)].completed_execution)
+    intervention_count = sum(1 for item in results if semantics_by_case[id(item)].intervention_triggered)
+    hard_block_count = sum(1 for item in results if semantics_by_case[id(item)].hard_blocked)
+    confirmation_count = sum(1 for item in results if semantics_by_case[id(item)].confirmation_required)
 
     attack_success_rate = (attack_success_count / len(attack_cases)) if attack_cases else 0.0
     leak_rate = (leak_count / len(sink_cases)) if sink_cases else 0.0

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from app.core.models import TrustLabel
 from app.tagging.trust_tagger import infer_trust, tag_source
 
@@ -82,3 +84,77 @@ def test_prompt_like_content_causes_downgrade() -> None:
 
 def test_unknown_source_can_stay_unknown_with_insufficient_signals() -> None:
     assert tag_source("unknown_source", "payload") == TrustLabel.UNKNOWN
+
+
+def _provenance_chain_text(result: object) -> str:
+    chain = getattr(result, "provenance_chain", [])
+    normalized: list[object] = []
+    for item in chain:
+        if hasattr(item, "model_dump"):
+            normalized.append(item.model_dump(mode="json"))
+        else:
+            normalized.append(item)
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, default=str).lower()
+
+
+def test_upstream_untrusted_provenance_is_explicitly_reflected() -> None:
+    baseline = infer_trust(
+        "tool_description",
+        "Tool can read files safely.",
+        metadata={"integrity_verified": True, "signature_valid": True},
+    )
+    with_untrusted_upstream = infer_trust(
+        "tool_description",
+        "Tool can read files safely.",
+        metadata={
+            "integrity_verified": True,
+            "signature_valid": True,
+            "upstream_trust_label": "untrusted",
+        },
+    )
+
+    if hasattr(with_untrusted_upstream, "derived_from_untrusted_content"):
+        assert with_untrusted_upstream.derived_from_untrusted_content is True
+    provenance_text = _provenance_chain_text(with_untrusted_upstream)
+    assert provenance_text
+    assert "upstream_trust_label" in provenance_text or "derived_from_untrusted_content" in provenance_text
+    assert (
+        with_untrusted_upstream.trust_score <= baseline.trust_score
+        or with_untrusted_upstream.downgrade_reasons
+    )
+
+
+def test_derived_from_source_type_is_recorded_in_provenance_chain() -> None:
+    result = infer_trust(
+        "cached_metadata",
+        "cached tool manifest",
+        metadata={
+            "integrity_verified": True,
+            "derived_from_source_type": "external_document",
+        },
+    )
+
+    provenance_text = _provenance_chain_text(result)
+    assert provenance_text
+    assert "derived_from_source_type" in provenance_text
+    assert "external_document" in provenance_text
+
+
+def test_direct_provenance_chain_input_and_evidence_strength_available() -> None:
+    result = infer_trust(
+        "cached_metadata",
+        "normalized payload",
+        metadata={
+            "provenance_chain": [
+                {"source": "upstream_doc", "trust_label": "untrusted", "note": "from email attachment"},
+                "intermediate parser",
+            ],
+            "integrity_verified": True,
+        },
+    )
+
+    provenance_text = _provenance_chain_text(result)
+    assert provenance_text
+    assert "upstream_doc" in provenance_text or "metadata.provenance_chain" in provenance_text
+    assert hasattr(result, "evidence_strength")
+    assert result.evidence_strength in {"weak", "medium", "strong"}

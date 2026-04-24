@@ -9,7 +9,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.models import DecisionAction
 from app.eval.attack_cases import default_attack_cases
+from app.eval.runtime_semantics import ExecutionSemantics, compute_execution_semantics
 
 
 DEFAULT_CASE_RESULTS_PATH = Path("data/eval_outputs/baseline/eval_case_results.json")
@@ -27,6 +29,14 @@ class FailureCaseSummary(BaseModel):
     sink_action: str
     primary_failure_reason: str
     likely_responsible_module: str
+    module_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    secondary_module_candidates: list[str] = Field(default_factory=list)
+
+    # Backward-compatible fields kept for existing report consumers/tests.
+    module_attribution_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    secondary_responsible_modules: list[str] = Field(default_factory=list)
+    attribution_evidence: list[str] = Field(default_factory=list)
+    expected_failure_mode: str = "unknown"
 
 
 class FailureAnalysisReport(BaseModel):
@@ -44,6 +54,86 @@ class FailureAnalysisReport(BaseModel):
     utility_loss_benign_cases: list[FailureCaseSummary] = Field(default_factory=list)
     trade_off_cases: list[FailureCaseSummary] = Field(default_factory=list)
     recommended_analysis_cases: list[FailureCaseSummary] = Field(default_factory=list)
+    module_responsibility_distribution: dict[str, int] = Field(default_factory=dict)
+    module_confidence_by_module: dict[str, float] = Field(default_factory=dict)
+    attribution_candidate_count: int = 0
+    average_module_attribution_confidence: float = 0.0
+    high_confidence_candidate_ratio: float = 0.0
+    low_confidence_case_ids: list[str] = Field(default_factory=list)
+
+
+KNOWN_MODULES: tuple[str, ...] = (
+    "trust_tagger",
+    "metadata_validator",
+    "capability_policy",
+    "decision_engine",
+    "sink_guard",
+)
+
+MODULE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "trust_tagger": (
+        "source trust",
+        "untrusted",
+        "semi-trusted",
+        "server_notification",
+        "external_document",
+        "cached_metadata",
+        "integrity_verified",
+        "signature",
+    ),
+    "metadata_validator": (
+        "schema",
+        "metadata",
+        "rollback",
+        "origin relocation",
+        "version drift",
+        "contract drift",
+        "description drift",
+        "same provider",
+    ),
+    "capability_policy": (
+        "capability",
+        "hidden_invocation",
+        "toolchain_delegation",
+        "mcp_invoke",
+        "network",
+        "write",
+        "execute",
+        "permission",
+    ),
+    "decision_engine": (
+        "authorization",
+        "policy composition",
+        "risk level",
+        "decision gate",
+        "escalate",
+        "require_confirmation",
+        "sandbox",
+    ),
+    "sink_guard": (
+        "sink",
+        "endpoint",
+        "network_send",
+        "payload",
+        "fragment",
+        "staged",
+        "exfil",
+        "redact",
+        "allowlisted",
+    ),
+}
+
+
+class ModuleAttribution(BaseModel):
+    """Structured module attribution used by failure summaries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    likely_responsible_module: str
+    module_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    secondary_module_candidates: list[str] = Field(default_factory=list)
+    attribution_evidence: list[str] = Field(default_factory=list)
+    expected_failure_mode: str = "unknown"
 
 
 def _load_json(path: Path) -> Any:
@@ -57,34 +147,48 @@ def _normalize_action(value: object) -> str:
     return text or "none"
 
 
-def _is_intervention(item: dict[str, object]) -> bool:
-    explicit = item.get("intervention_triggered")
-    if explicit is not None:
-        return bool(explicit)
-    decision_action = _normalize_action(item.get("decision_action"))
-    sink_action = _normalize_action(item.get("sink_action"))
-    return decision_action != "allow" or sink_action not in {"none", "allow"}
+def _coerce_optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
 
 
-def _is_completed(item: dict[str, object]) -> bool:
-    explicit = item.get("completed_execution")
-    if explicit is not None:
-        return bool(explicit)
-    decision_action = _normalize_action(item.get("decision_action"))
-    sink_action = _normalize_action(item.get("sink_action"))
-    decision_blocks = decision_action in {"deny", "escalate", "require_confirmation"}
-    sink_blocks = sink_action in {"deny", "require_confirmation"}
-    return not (decision_blocks or sink_blocks)
+def _normalize_decision_action_for_semantics(value: object) -> DecisionAction:
+    if isinstance(value, DecisionAction):
+        return value
+    normalized = _normalize_action(value)
+    for action in DecisionAction:
+        if normalized == action.value:
+            return action
+    return DecisionAction.ALLOW
 
 
-def _is_degraded(item: dict[str, object]) -> bool:
-    explicit = item.get("execution_degraded")
-    if explicit is not None:
-        return bool(explicit)
-    if not _is_completed(item):
-        return True
-    decision_action = _normalize_action(item.get("decision_action"))
-    return decision_action in {"sandbox", "redact"}
+def _normalize_sink_action_for_semantics(value: object) -> DecisionAction | None:
+    if value is None:
+        return None
+    if isinstance(value, DecisionAction):
+        return value
+    normalized = _normalize_action(value)
+    if normalized == "none":
+        return None
+    for action in DecisionAction:
+        if normalized == action.value:
+            return action
+    return None
+
+
+def _item_execution_semantics(item: dict[str, object]) -> ExecutionSemantics:
+    semantics = compute_execution_semantics(
+        _normalize_decision_action_for_semantics(item.get("decision_action")),
+        _normalize_sink_action_for_semantics(item.get("sink_action")),
+        runtime_executed=_coerce_optional_bool(item.get("executed")),
+        runtime_completed_execution=_coerce_optional_bool(item.get("completed_execution")),
+        runtime_execution_degraded=_coerce_optional_bool(item.get("execution_degraded")),
+    )
+    explicit_intervention = item.get("intervention_triggered")
+    if explicit_intervention is not None:
+        semantics = semantics.model_copy(update={"intervention_triggered": bool(explicit_intervention)})
+    return semantics
 
 
 def _build_case_meta_lookup() -> dict[str, dict[str, str]]:
@@ -93,26 +197,163 @@ def _build_case_meta_lookup() -> dict[str, dict[str, str]]:
         lookup[case.id] = {
             "primary_target_module": case.primary_target_module,
             "expected_failure_mode": case.expected_failure_mode,
+            "case_family": case.case_family,
         }
     return lookup
 
 
-def _infer_module(item: dict[str, object], case_meta_lookup: dict[str, dict[str, str]]) -> str:
-    case_id = str(item.get("case_id", ""))
-    if case_id in case_meta_lookup:
-        return case_meta_lookup[case_id]["primary_target_module"]
-
-    findings_text = " ".join(str(x).lower() for x in item.get("findings", []))
-    sink_action = _normalize_action(item.get("sink_action"))
-    if sink_action != "none" or bool(item.get("involves_sink")):
-        return "sink_guard"
-    if any(token in findings_text for token in ["schema", "metadata", "rollback", "origin relocation"]):
-        return "metadata_validator"
-    if "source trust" in findings_text:
-        return "trust_tagger"
-    if any(token in findings_text for token in ["hidden_invocation", "toolchain_delegation", "capability"]):
-        return "capability_policy"
+def _normalize_module_name(module: object) -> str:
+    normalized = str(module or "").strip().lower()
+    if normalized in KNOWN_MODULES:
+        return normalized
     return "decision_engine"
+
+
+def _add_score(
+    *,
+    module_scores: dict[str, float],
+    module_evidence: dict[str, list[str]],
+    module: str,
+    score: float,
+    evidence: str,
+) -> None:
+    normalized_module = _normalize_module_name(module)
+    module_scores[normalized_module] += score
+    if evidence not in module_evidence[normalized_module]:
+        module_evidence[normalized_module].append(evidence)
+
+
+def _collect_signal_text(item: dict[str, object]) -> str:
+    parts: list[str] = []
+    for key in ("attack_type", "decision_action", "sink_action", "primary_failure_reason"):
+        value = item.get(key)
+        if value is not None:
+            parts.append(str(value))
+
+    for key in ("findings", "reasons"):
+        value = item.get(key)
+        if isinstance(value, list):
+            parts.extend(str(entry) for entry in value)
+    return " ".join(parts).lower()
+
+
+def _infer_module_attribution(
+    item: dict[str, object],
+    case_meta_lookup: dict[str, dict[str, str]],
+) -> ModuleAttribution:
+    module_scores: dict[str, float] = {module: 0.0 for module in KNOWN_MODULES}
+    module_evidence: dict[str, list[str]] = {module: [] for module in KNOWN_MODULES}
+
+    case_id = str(item.get("case_id", ""))
+    case_meta = case_meta_lookup.get(case_id)
+    expected_failure_mode = "unknown"
+    meta_module = "decision_engine"
+    if case_meta is not None:
+        expected_failure_mode = case_meta.get("expected_failure_mode", "unknown")
+        meta_module = _normalize_module_name(case_meta.get("primary_target_module"))
+        _add_score(
+            module_scores=module_scores,
+            module_evidence=module_evidence,
+            module=meta_module,
+            score=3.0,
+            evidence=f"case_metadata_target:{meta_module}",
+        )
+        if expected_failure_mode and expected_failure_mode != "none":
+            _add_score(
+                module_scores=module_scores,
+                module_evidence=module_evidence,
+                module=meta_module,
+                score=0.4,
+                evidence=f"expected_failure_mode:{expected_failure_mode}",
+            )
+
+    sink_action = _normalize_action(item.get("sink_action"))
+    decision_action = _normalize_action(item.get("decision_action"))
+    if bool(item.get("involves_sink")):
+        _add_score(
+            module_scores=module_scores,
+            module_evidence=module_evidence,
+            module="sink_guard",
+            score=1.4,
+            evidence="case_flag:involves_sink",
+        )
+    if sink_action != "none":
+        _add_score(
+            module_scores=module_scores,
+            module_evidence=module_evidence,
+            module="sink_guard",
+            score=0.8,
+            evidence=f"sink_action:{sink_action}",
+        )
+    if decision_action in {"escalate", "require_confirmation", "sandbox", "redact"}:
+        _add_score(
+            module_scores=module_scores,
+            module_evidence=module_evidence,
+            module="decision_engine",
+            score=0.8,
+            evidence=f"decision_action:{decision_action}",
+        )
+
+    signal_text = _collect_signal_text(item)
+    for module, keywords in MODULE_KEYWORDS.items():
+        hits = [token for token in keywords if token in signal_text]
+        if not hits:
+            continue
+        capped_hits = hits[:4]
+        score = min(2.0, 0.45 * len(hits))
+        _add_score(
+            module_scores=module_scores,
+            module_evidence=module_evidence,
+            module=module,
+            score=score,
+            evidence=f"signals:{', '.join(capped_hits)}",
+        )
+
+    scored_modules = sorted(module_scores.items(), key=lambda entry: (-entry[1], entry[0]))
+    top_module, top_score = scored_modules[0]
+    if top_score <= 0:
+        top_module = "decision_engine"
+        top_score = 1.0
+        _add_score(
+            module_scores=module_scores,
+            module_evidence=module_evidence,
+            module=top_module,
+            score=top_score,
+            evidence="fallback:no_strong_signal",
+        )
+        scored_modules = sorted(module_scores.items(), key=lambda entry: (-entry[1], entry[0]))
+
+    second_score = scored_modules[1][1] if len(scored_modules) > 1 else 0.0
+    margin_ratio = ((top_score - second_score) / top_score) if top_score > 0 else 0.0
+    has_competing_signal = second_score >= 1.2
+
+    base_confidence = 0.35
+    if case_meta is not None:
+        base_confidence += 0.2 if top_module == meta_module else -0.05
+    support_bonus = min(top_score / 5.0, 1.0) * 0.08
+    ambiguity_penalty = 0.1 if has_competing_signal else 0.0
+    evidence_bonus = min(len(module_evidence.get(top_module, [])), 3) * 0.015
+    confidence = round(
+        min(0.95, max(0.2, base_confidence + (0.2 * margin_ratio) + support_bonus + evidence_bonus - ambiguity_penalty)),
+        3,
+    )
+
+    secondary_modules = [
+        module
+        for module, score in scored_modules[1:]
+        if score > 0 and score >= max(1.2, top_score * 0.55)
+    ][:2]
+    evidence = module_evidence.get(top_module, [])[:3]
+    if not evidence:
+        evidence = ["fallback:no_direct_evidence"]
+
+    return ModuleAttribution(
+        likely_responsible_module=top_module,
+        module_confidence=confidence,
+        secondary_module_candidates=secondary_modules,
+        attribution_evidence=evidence,
+        expected_failure_mode=expected_failure_mode,
+    )
 
 
 def _primary_failure_reason(
@@ -144,7 +385,7 @@ def _to_summary(
     item: dict[str, object],
     *,
     primary_failure_reason: str,
-    likely_responsible_module: str,
+    module_attribution: ModuleAttribution,
 ) -> FailureCaseSummary:
     return FailureCaseSummary(
         case_id=str(item.get("case_id", "")),
@@ -152,7 +393,13 @@ def _to_summary(
         decision_action=_normalize_action(item.get("decision_action")),
         sink_action=_normalize_action(item.get("sink_action")),
         primary_failure_reason=primary_failure_reason,
-        likely_responsible_module=likely_responsible_module,
+        likely_responsible_module=module_attribution.likely_responsible_module,
+        module_confidence=module_attribution.module_confidence,
+        secondary_module_candidates=module_attribution.secondary_module_candidates,
+        module_attribution_confidence=module_attribution.module_confidence,
+        secondary_responsible_modules=module_attribution.secondary_module_candidates,
+        attribution_evidence=module_attribution.attribution_evidence,
+        expected_failure_mode=module_attribution.expected_failure_mode,
     )
 
 
@@ -160,13 +407,15 @@ def _markdown_table(items: list[FailureCaseSummary]) -> str:
     if not items:
         return "_None_\n"
     lines = [
-        "| case_id | attack_type | decision_action | sink_action | primary_failure_reason | likely_responsible_module |",
-        "|---|---|---|---|---|---|",
+        "| case_id | attack_type | decision_action | sink_action | primary_failure_reason | likely_responsible_module | attribution_confidence | expected_failure_mode | attribution_evidence |",
+        "|---|---|---|---|---|---|---:|---|---|",
     ]
     for item in items:
+        evidence = "; ".join(item.attribution_evidence[:2]) if item.attribution_evidence else "none"
         lines.append(
             f"| {item.case_id} | {item.attack_type} | {item.decision_action} | {item.sink_action} | "
-            f"{item.primary_failure_reason} | {item.likely_responsible_module} |"
+            f"{item.primary_failure_reason} | {item.likely_responsible_module} | "
+            f"{item.module_attribution_confidence:.3f} | {item.expected_failure_mode} | {evidence} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -196,6 +445,24 @@ def _build_markdown(report: FailureAnalysisReport, case_results_path: Path, summ
 
     def add_section(title: str, items: list[FailureCaseSummary]) -> None:
         lines.extend(["", f"## {title}", "", _markdown_table(items)])
+
+    lines.extend(
+        [
+            "",
+            "## Module Attribution Snapshot",
+            "",
+            f"- attribution_candidate_count: {report.attribution_candidate_count}",
+            f"- average_module_attribution_confidence: {report.average_module_attribution_confidence:.3f}",
+            f"- high_confidence_candidate_ratio: {report.high_confidence_candidate_ratio:.3f}",
+            f"- low_confidence_case_ids: {', '.join(report.low_confidence_case_ids) if report.low_confidence_case_ids else 'none'}",
+            "",
+            "| module | case_count | avg_confidence |",
+            "|---|---:|---:|",
+        ]
+    )
+    for module, count in report.module_responsibility_distribution.items():
+        avg_confidence = report.module_confidence_by_module.get(module, 0.0)
+        lines.append(f"| {module} | {count} | {avg_confidence:.3f} |")
 
     add_section("Mismatched Cases", report.mismatched_cases)
     add_section("Successful Attacks", report.successful_attacks)
@@ -231,21 +498,24 @@ def build_failure_report(
     trade_off_cases: list[FailureCaseSummary] = []
 
     scored_cases: list[tuple[int, FailureCaseSummary]] = []
+    analysis_candidates: dict[str, FailureCaseSummary] = {}
 
     for item in case_payload:
         if not isinstance(item, dict):
             continue
 
+        semantics: ExecutionSemantics = _item_execution_semantics(item)
         is_attack = bool(item.get("is_attack", False))
         is_benign = bool(item.get("is_benign", False))
         mismatched = not bool(item.get("matched_expectation", False))
-        successful_attack = is_attack and (not _is_intervention(item))
-        leak_prone = bool(item.get("involves_sink", False)) and _is_completed(item) and _normalize_action(item.get("sink_action")) != "deny"
-        false_positive = is_benign and _is_intervention(item)
-        utility_loss = is_benign and ((not _is_completed(item)) or _is_degraded(item))
+        successful_attack = is_attack and (not semantics.intervention_triggered)
+        # Leak semantics use the same unified source as metrics.py.
+        leak_prone = bool(item.get("involves_sink", False)) and semantics.leak_possible
+        false_positive = is_benign and semantics.intervention_triggered
+        utility_loss = is_benign and ((not semantics.completed_execution) or semantics.execution_degraded)
         trade_off = (is_benign and (false_positive or utility_loss)) or (is_attack and successful_attack)
 
-        likely_module = _infer_module(item, case_meta_lookup)
+        module_attribution = _infer_module_attribution(item, case_meta_lookup)
         reason = _primary_failure_reason(
             mismatched=mismatched,
             successful_attack=successful_attack,
@@ -256,7 +526,7 @@ def build_failure_report(
         summary = _to_summary(
             item,
             primary_failure_reason=reason,
-            likely_responsible_module=likely_module,
+            module_attribution=module_attribution,
         )
 
         if mismatched:
@@ -281,6 +551,9 @@ def build_failure_report(
         )
         if score > 0:
             scored_cases.append((score, summary))
+            current = analysis_candidates.get(summary.case_id)
+            if current is None or summary.module_attribution_confidence > current.module_attribution_confidence:
+                analysis_candidates[summary.case_id] = summary
 
     # Deduplicate recommended cases by case_id keeping highest score first.
     scored_cases.sort(key=lambda item: (-item[0], item[1].case_id))
@@ -293,6 +566,36 @@ def build_failure_report(
         seen.add(summary.case_id)
         if len(recommended) >= 12:
             break
+
+    candidate_items = list(analysis_candidates.values())
+    module_responsibility_distribution: dict[str, int] = {}
+    module_confidence_accumulator: dict[str, list[float]] = {}
+    low_confidence_case_ids: list[str] = []
+    for item in candidate_items:
+        module = item.likely_responsible_module
+        module_responsibility_distribution[module] = module_responsibility_distribution.get(module, 0) + 1
+        module_confidence_accumulator.setdefault(module, []).append(item.module_attribution_confidence)
+        if item.module_attribution_confidence < 0.5:
+            low_confidence_case_ids.append(item.case_id)
+
+    module_confidence_by_module = {
+        module: round(sum(values) / len(values), 3)
+        for module, values in sorted(module_confidence_accumulator.items())
+    }
+    candidate_count = len(candidate_items)
+    average_confidence = (
+        round(sum(item.module_attribution_confidence for item in candidate_items) / candidate_count, 3)
+        if candidate_count > 0
+        else 0.0
+    )
+    high_confidence_candidate_ratio = (
+        round(
+            len([item for item in candidate_items if item.module_attribution_confidence >= 0.75]) / candidate_count,
+            3,
+        )
+        if candidate_count > 0
+        else 0.0
+    )
 
     report = FailureAnalysisReport(
         total_cases=len([item for item in case_payload if isinstance(item, dict)]),
@@ -319,6 +622,12 @@ def build_failure_report(
         utility_loss_benign_cases=utility_loss_benign_cases,
         trade_off_cases=trade_off_cases,
         recommended_analysis_cases=recommended,
+        module_responsibility_distribution=dict(sorted(module_responsibility_distribution.items())),
+        module_confidence_by_module=module_confidence_by_module,
+        attribution_candidate_count=candidate_count,
+        average_module_attribution_confidence=average_confidence,
+        high_confidence_candidate_ratio=high_confidence_candidate_ratio,
+        low_confidence_case_ids=sorted(low_confidence_case_ids),
     )
     return report
 

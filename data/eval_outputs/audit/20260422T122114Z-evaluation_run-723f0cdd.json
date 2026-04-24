@@ -1,0 +1,9 @@
+{
+  "event_type": "evaluation_run",
+  "timestamp": "2026-04-22T12:21:14.530603+00:00",
+  "payload": {
+    "ablation_name": "baseline",
+    "output_dir": null,
+    "emit_failure_report": false
+  }
+}

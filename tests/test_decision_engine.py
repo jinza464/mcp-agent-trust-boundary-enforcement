@@ -227,3 +227,53 @@ def test_sandbox_only_for_reinforced_dual_medium_signals() -> None:
         )
     )
     assert result.action == DecisionAction.SANDBOX
+
+
+def test_decision_evidence_tree_structure_is_present() -> None:
+    metadata = _metadata(description="Safe read tool.")
+    result = decide(
+        DecisionContext(
+            tool_metadata=metadata,
+            source_trust_label=TrustLabel.TRUSTED,
+            capability_result=classify_capabilities(metadata),
+            metadata_validation_result=_metadata_result(risk_level=RiskLevel.LOW, passed=True),
+        )
+    )
+
+    evidence = result.decision_result.evidence
+    assert "evidence_tree" in evidence
+    assert "policy_trace" in evidence
+
+    tree = evidence["evidence_tree"]
+    assert isinstance(tree, dict)
+    assert {"root_action", "aggregate_risk", "nodes"}.issubset(set(tree.keys()))
+    assert isinstance(tree["nodes"], list)
+    assert any(
+        isinstance(node, dict) and node.get("rule_id") == "aggregation:final_action"
+        for node in tree["nodes"]
+    )
+
+
+def test_user_authorization_lift_is_explicit_in_evidence_tree() -> None:
+    metadata = _metadata(description="Read and write project file.", capabilities={CapabilityType.READ, CapabilityType.WRITE})
+    result = decide(
+        DecisionContext(
+            tool_metadata=metadata,
+            source_trust_label=TrustLabel.SEMI_TRUSTED,
+            capability_result=classify_capabilities(metadata),
+            metadata_validation_result=_metadata_result(risk_level=RiskLevel.HIGH, passed=False),
+            user_authorized=True,
+        )
+    )
+
+    assert result.action == DecisionAction.ALLOW
+    evidence = result.decision_result.evidence
+    assert evidence.get("user_authorization_lifted") is True
+    assert "pre_authorization_action" in evidence
+
+    tree = evidence.get("evidence_tree", {})
+    nodes = tree.get("nodes", []) if isinstance(tree, dict) else []
+    assert any(
+        isinstance(node, dict) and node.get("rule_id") == "aggregation:user_authorization_lift"
+        for node in nodes
+    )
