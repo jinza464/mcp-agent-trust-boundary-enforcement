@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.models import DecisionAction
+
+RUNTIME_SEMANTICS_VERSION = "v1"
+CASE_PACK_VERSION = "v1"
+SEAL_TAG = "research-prototype-v1.0"
+
+SEMANTIC_ARTIFACT_FIELDS: tuple[str, ...] = (
+    "completed_execution",
+    "execution_degraded",
+    "intervention_triggered",
+    "leak_possible",
+)
+
+
+def artifact_metadata() -> dict[str, str]:
+    """Return stable artifact version metadata for eval outputs."""
+    return {
+        "semantics_version": RUNTIME_SEMANTICS_VERSION,
+        "case_pack_version": CASE_PACK_VERSION,
+        "seal_tag": SEAL_TAG,
+    }
 
 
 class ExecutionSemantics(BaseModel):
@@ -85,6 +107,28 @@ def _normalize_action(value: DecisionAction | str | None) -> DecisionAction | No
         if normalized == action.value:
             return action
     raise ValueError(f"Unsupported action value: {value!r}")
+
+
+def _artifact_to_mapping(artifact: Mapping[str, Any] | BaseModel) -> Mapping[str, Any]:
+    if isinstance(artifact, BaseModel):
+        return artifact.model_dump(mode="python")
+    return artifact
+
+
+def _artifact_optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "0", "no", "n"}:
+            return False
+    return None
 
 
 def _infer_action_semantics(
@@ -214,3 +258,56 @@ def compute_execution_semantics(
         blocked_by_sink=action_state.blocked_by_sink,
         leak_possible=leak_possible,
     )
+
+
+def validate_execution_artifact_consistency(
+    artifact: Mapping[str, Any] | BaseModel,
+    *,
+    raise_on_warning: bool = False,
+) -> list[str]:
+    """
+    Validate persisted execution semantic fields against the canonical semantic function.
+
+    The validator is intentionally read-only: it reports drift between artifact fields and
+    recomputed semantics, but never rewrites historical artifacts.
+    """
+    item = _artifact_to_mapping(artifact)
+    if "decision_action" not in item:
+        warnings = ["artifact missing required decision_action for semantic consistency validation"]
+        if raise_on_warning:
+            raise ValueError("; ".join(warnings))
+        return warnings
+
+    try:
+        expected = compute_execution_semantics(
+            item["decision_action"],
+            item.get("sink_action"),
+            runtime_executed=_artifact_optional_bool(item.get("runtime_executed")),
+            runtime_completed_execution=_artifact_optional_bool(item.get("runtime_completed_execution")),
+            runtime_execution_degraded=_artifact_optional_bool(item.get("runtime_execution_degraded")),
+        )
+    except ValueError as exc:
+        warnings = [f"artifact semantic validation failed: {exc}"]
+        if raise_on_warning:
+            raise ValueError("; ".join(warnings)) from exc
+        return warnings
+
+    warnings: list[str] = []
+    expected_payload = expected.model_dump(mode="python")
+    case_id = str(item.get("case_id") or item.get("id") or "unknown")
+    for field in SEMANTIC_ARTIFACT_FIELDS:
+        if field not in item or item.get(field) is None:
+            continue
+        observed = _artifact_optional_bool(item.get(field))
+        expected_value = expected_payload[field]
+        if observed is None:
+            warnings.append(f"{case_id}: {field} is not a boolean-compatible value")
+            continue
+        if observed != expected_value:
+            warnings.append(
+                f"{case_id}: {field} mismatch; observed={observed}, expected={expected_value}"
+            )
+
+    if raise_on_warning and warnings:
+        raise ValueError("; ".join(warnings))
+    return warnings

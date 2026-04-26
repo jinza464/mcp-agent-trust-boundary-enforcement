@@ -8,12 +8,12 @@ from pathlib import Path
 from app.eval.attack_cases import default_attack_cases
 from app.eval.metrics import export_results, resolve_case_semantics, summarize_results
 from app.eval.failure_report import build_and_export_failure_report
+from app.eval.runtime_semantics import artifact_metadata
 from app.eval.runner import AblationConfig, run_all_cases
 
 
 DEFAULT_OUTPUT_ROOT = Path("data/eval_outputs")
 DEFAULT_ABLATION_NAME = "baseline"
-RUNTIME_SEMANTICS_VERSION = "v1"
 AblationName = str
 ABLATION_PRESETS: dict[AblationName, AblationConfig] = {
     "baseline": AblationConfig(),
@@ -32,7 +32,7 @@ def _runtime_semantics_snapshot(results) -> dict[str, int | float | str]:
     confirmation_count = sum(1 for item in semantics if item.confirmation_required)
     escalation_count = sum(1 for item in semantics if item.escalation_triggered)
     return {
-        "semantics_version": RUNTIME_SEMANTICS_VERSION,
+        **artifact_metadata(),
         "semantics_source": "metrics.resolve_case_semantics",
         "total_cases": total,
         "completed_execution_count": completed_count,
@@ -77,6 +77,7 @@ def run_local_eval(
         )
 
     payload = {
+        "artifact_metadata": artifact_metadata(),
         "ablation_name": ablation_name,
         "ablation_config": cfg,
         "summary": summary,

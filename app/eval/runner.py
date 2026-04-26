@@ -9,7 +9,12 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from app.core.models import DecisionAction, RiskLevel, TrustLabel
 from app.decision.decision_engine import DecisionContext, decide
 from app.eval.attack_cases import EvalAttackCase, default_attack_cases
-from app.eval.runtime_semantics import compute_execution_semantics
+from app.eval.runtime_semantics import (
+    CASE_PACK_VERSION,
+    RUNTIME_SEMANTICS_VERSION,
+    SEAL_TAG,
+    compute_execution_semantics,
+)
 from app.policy.capability_policy import classify_capabilities
 from app.sink.sink_guard import inspect_sink
 from app.tagging.trust_tagger import tag_source
@@ -37,6 +42,10 @@ class EvalCaseResult(BaseModel):
     execution_degraded: bool | None = Field(default=None)
     reasons: list[str] = Field(default_factory=list)
     findings: list[str] = Field(default_factory=list)
+    leak_possible: bool | None = Field(default=None)
+    semantics_version: str = Field(default=RUNTIME_SEMANTICS_VERSION)
+    case_pack_version: str = Field(default=CASE_PACK_VERSION)
+    seal_tag: str = Field(default=SEAL_TAG)
 
 
 class AblationConfig(BaseModel):
@@ -236,6 +245,7 @@ def run_case(
         intervention_triggered=semantics.intervention_triggered,
         completed_execution=semantics.completed_execution,
         execution_degraded=semantics.execution_degraded,
+        leak_possible=semantics.leak_possible,
         reasons=decision_result.reasons,
         findings=decision_result.findings + sink_findings + ablation_notes,
     )

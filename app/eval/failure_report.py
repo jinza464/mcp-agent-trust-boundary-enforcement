@@ -11,7 +11,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.models import DecisionAction
 from app.eval.attack_cases import default_attack_cases
-from app.eval.runtime_semantics import ExecutionSemantics, compute_execution_semantics
+from app.eval.runtime_semantics import (
+    CASE_PACK_VERSION,
+    RUNTIME_SEMANTICS_VERSION,
+    SEAL_TAG,
+    ExecutionSemantics,
+    compute_execution_semantics,
+    validate_execution_artifact_consistency,
+)
 
 
 DEFAULT_CASE_RESULTS_PATH = Path("data/eval_outputs/baseline/eval_case_results.json")
@@ -44,8 +51,12 @@ class FailureAnalysisReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    semantics_version: str = Field(default=RUNTIME_SEMANTICS_VERSION)
+    case_pack_version: str = Field(default=CASE_PACK_VERSION)
+    seal_tag: str = Field(default=SEAL_TAG)
     total_cases: int
     summary_snapshot: dict[str, object] = Field(default_factory=dict)
+    artifact_consistency_warnings: list[str] = Field(default_factory=list)
     category_counts: dict[str, int] = Field(default_factory=dict)
     mismatched_cases: list[FailureCaseSummary] = Field(default_factory=list)
     successful_attacks: list[FailureCaseSummary] = Field(default_factory=list)
@@ -496,6 +507,7 @@ def build_failure_report(
     false_positive_benign_cases: list[FailureCaseSummary] = []
     utility_loss_benign_cases: list[FailureCaseSummary] = []
     trade_off_cases: list[FailureCaseSummary] = []
+    artifact_consistency_warnings: list[str] = []
 
     scored_cases: list[tuple[int, FailureCaseSummary]] = []
     analysis_candidates: dict[str, FailureCaseSummary] = {}
@@ -504,6 +516,7 @@ def build_failure_report(
         if not isinstance(item, dict):
             continue
 
+        artifact_consistency_warnings.extend(validate_execution_artifact_consistency(item))
         semantics: ExecutionSemantics = _item_execution_semantics(item)
         is_attack = bool(item.get("is_attack", False))
         is_benign = bool(item.get("is_benign", False))
@@ -600,12 +613,16 @@ def build_failure_report(
     report = FailureAnalysisReport(
         total_cases=len([item for item in case_payload if isinstance(item, dict)]),
         summary_snapshot={
+            "semantics_version": summary_payload.get("semantics_version"),
+            "case_pack_version": summary_payload.get("case_pack_version"),
+            "seal_tag": summary_payload.get("seal_tag"),
             "match_rate": summary_payload.get("match_rate"),
             "attack_success_rate": summary_payload.get("attack_success_rate"),
             "leak_rate": summary_payload.get("leak_rate"),
             "false_positive_rate": summary_payload.get("false_positive_rate"),
             "utility_loss": summary_payload.get("utility_loss"),
         },
+        artifact_consistency_warnings=artifact_consistency_warnings,
         category_counts={
             "mismatched_cases": len(mismatched_cases),
             "successful_attacks": len(successful_attacks),

@@ -8,7 +8,14 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.models import DecisionAction
-from app.eval.runtime_semantics import ExecutionSemantics, compute_execution_semantics
+from app.eval.runtime_semantics import (
+    CASE_PACK_VERSION,
+    RUNTIME_SEMANTICS_VERSION,
+    SEAL_TAG,
+    ExecutionSemantics,
+    artifact_metadata,
+    compute_execution_semantics,
+)
 from app.eval.runner import EvalCaseResult
 
 
@@ -17,6 +24,9 @@ class EvalSummary(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    semantics_version: str = Field(default=RUNTIME_SEMANTICS_VERSION)
+    case_pack_version: str = Field(default=CASE_PACK_VERSION)
+    seal_tag: str = Field(default=SEAL_TAG)
     total_cases: int = Field(..., description="Total number of evaluated cases.")
     matched_cases: int = Field(..., description="Number of cases matched expected outcomes.")
     match_rate: float = Field(..., description="Matched ratio in [0.0, 1.0].")
@@ -154,7 +164,8 @@ def export_results(results: list[EvalCaseResult], output_dir: str | Path) -> dic
     summary_path = out_dir / "eval_summary.json"
 
     case_payload = [item.model_dump(mode="json") for item in results]
+    summary_payload = {**artifact_metadata(), **summary.model_dump(mode="json")}
     cases_path.write_text(json.dumps(case_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    summary_path.write_text(json.dumps(summary.model_dump(mode="json"), ensure_ascii=False, indent=2), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return {"cases": cases_path, "summary": summary_path}

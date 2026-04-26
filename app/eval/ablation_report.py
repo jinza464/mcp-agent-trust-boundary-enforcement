@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from app.eval.attack_cases import default_attack_cases
+from app.eval.runtime_semantics import artifact_metadata
 
 
 DEFAULT_SUMMARY_PATHS: dict[str, Path] = {
@@ -18,6 +19,9 @@ DEFAULT_SUMMARY_PATHS: dict[str, Path] = {
 
 REPORT_COLUMNS: list[str] = [
     "configuration",
+    "semantics_version",
+    "case_pack_version",
+    "seal_tag",
     "disabled_modules",
     "affected_cases_count",
     "affected_cases_ratio",
@@ -268,6 +272,7 @@ def load_ablation_summaries(
         top_affected_family = _top_affected_family(family_stats)
         row = {
             "configuration": config_name,
+            **artifact_metadata(),
             "disabled_modules": ",".join(disabled_modules) if disabled_modules else "none",
             "affected_cases_count": affected_cases_count,
             "affected_cases_ratio": float(affected_cases_ratio),
@@ -318,16 +323,17 @@ def export_ablation_report(
     """Export ablation report rows into JSON and CSV files."""
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    rows_to_export = [{**artifact_metadata(), **row} for row in rows]
 
     json_path = out_dir / f"{base_name}.json"
     csv_path = out_dir / f"{base_name}.csv"
 
-    json_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    json_path.write_text(json.dumps(rows_to_export, ensure_ascii=False, indent=2), encoding="utf-8")
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=REPORT_COLUMNS)
         writer.writeheader()
         csv_rows: list[dict[str, object]] = []
-        for row in rows:
+        for row in rows_to_export:
             csv_row = dict(row)
             by_family = csv_row.get("affected_cases_by_family")
             if isinstance(by_family, dict):
@@ -346,7 +352,7 @@ def build_and_export_ablation_report(
     """Load default ablation summaries and export a unified report."""
     rows = load_ablation_summaries(summary_paths=summary_paths)
     exported = export_ablation_report(rows, output_dir=output_dir, base_name=base_name)
-    return {"rows": rows, "exported_paths": exported}
+    return {"artifact_metadata": artifact_metadata(), "rows": rows, "exported_paths": exported}
 
 
 def main() -> None:

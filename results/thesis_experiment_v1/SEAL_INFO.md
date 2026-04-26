@@ -4,6 +4,14 @@
 
 research-prototype-v1.0
 
+## Tag
+
+research-prototype-v1.0
+
+## Commit
+
+54d8b9247bb5379244855220768ff05372743cde
+
 ## Status
 
 Thesis experiment ready.
@@ -14,7 +22,7 @@ Full pytest passed.
 
 ## Date
 
-请填写当前日期。
+2026-04-26
 
 ## Notes
 
