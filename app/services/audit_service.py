@@ -100,9 +100,9 @@ class AuditService:
     def flush(self) -> dict[str, object]:
         if not self._buffer:
             return {"file_path": str(self._jsonl_path), "written_events": 0}
-        batch = self._buffer
-        self._buffer = []
+        batch = list(self._buffer)
         written = self._flush_batch(batch)
+        del self._buffer[: len(batch)]
         return {"file_path": str(self._jsonl_path), "written_events": written}
 
     def close(self) -> dict[str, object]:
