@@ -8,6 +8,12 @@ from pathlib import Path
 
 from app.eval.attack_cases import default_attack_cases
 from app.eval.runtime_semantics import artifact_metadata
+from app.eval.statistics import (
+    bootstrap_confidence_interval,
+    compare_configs_paired,
+    group_metrics_by_family,
+    group_metrics_by_primary_module,
+)
 
 
 DEFAULT_SUMMARY_PATHS: dict[str, Path] = {
@@ -66,6 +72,19 @@ UTILITY_METRIC_KEYS: list[str] = [
     "false_positive_rate",
     "utility_loss",
 ]
+STATISTICS_RATE_KEYS: list[str] = [
+    "match_rate",
+    "attack_success_rate",
+    "leak_rate",
+    "false_positive_rate",
+    "utility_loss",
+]
+PAIRED_COMPARISON_FIELDS: list[str] = [
+    "matched_expectation",
+    "intervention_triggered",
+    "completed_execution",
+    "execution_degraded",
+]
 
 
 def _infer_disabled_modules(config_name: str) -> list[str]:
@@ -80,6 +99,57 @@ def _infer_disabled_modules(config_name: str) -> list[str]:
 
 def _derive_case_results_path(summary_path: Path) -> Path:
     return summary_path.parent / "eval_case_results.json"
+
+
+def _load_case_results(case_results_path: Path) -> list[dict[str, object]]:
+    if not case_results_path.exists():
+        return []
+    payload = json.loads(case_results_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _rate_values_from_cases(cases: list[dict[str, object]], metric_name: str) -> list[bool]:
+    if metric_name == "match_rate":
+        return [bool(item.get("matched_expectation", False)) for item in cases]
+    if metric_name == "attack_success_rate":
+        return [
+            not bool(item.get("intervention_triggered", False))
+            for item in cases
+            if bool(item.get("is_attack", False))
+        ]
+    if metric_name == "leak_rate":
+        values: list[bool] = []
+        for item in cases:
+            if not bool(item.get("involves_sink", False)):
+                continue
+            leak_possible = _optional_bool(item.get("leak_possible"))
+            if leak_possible is not None:
+                values.append(leak_possible)
+        return values
+    if metric_name == "false_positive_rate":
+        return [
+            bool(item.get("intervention_triggered", False))
+            for item in cases
+            if bool(item.get("is_benign", False))
+        ]
+    if metric_name == "utility_loss":
+        values = []
+        for item in cases:
+            if not bool(item.get("is_benign", False)):
+                continue
+            completed = bool(item.get("completed_execution", False))
+            degraded = bool(item.get("execution_degraded", False))
+            values.append((not completed) or degraded)
+        return values
+    return []
 
 
 def _is_case_affected(item: dict[str, object]) -> bool:
@@ -344,15 +414,108 @@ def export_ablation_report(
     return {"json": json_path, "csv": csv_path}
 
 
+def build_ablation_statistics_appendix(
+    summary_paths: dict[str, str | Path] | None = None,
+    *,
+    n_bootstrap: int = 1000,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> dict[str, object]:
+    """Build optional statistics appendix from case-level ablation artifacts."""
+    selected = summary_paths or DEFAULT_SUMMARY_PATHS
+    case_results_by_config: dict[str, list[dict[str, object]]] = {
+        config_name: _load_case_results(_derive_case_results_path(Path(path_like)))
+        for config_name, path_like in selected.items()
+    }
+
+    bootstrap_intervals: dict[str, dict[str, object]] = {}
+    for config_name, cases in case_results_by_config.items():
+        config_payload: dict[str, object] = {}
+        for metric_name in STATISTICS_RATE_KEYS:
+            values = _rate_values_from_cases(cases, metric_name)
+            if not values:
+                config_payload[metric_name] = {
+                    "skipped": True,
+                    "reason": "case-level values unavailable for this metric",
+                    "n": 0,
+                }
+                continue
+            config_payload[metric_name] = bootstrap_confidence_interval(
+                values,
+                n_bootstrap=n_bootstrap,
+                confidence=confidence,
+                seed=seed,
+            )
+        bootstrap_intervals[config_name] = config_payload
+
+    baseline_cases = case_results_by_config.get("baseline", [])
+    paired_comparisons: dict[str, object] = {}
+    for config_name, cases in case_results_by_config.items():
+        if config_name == "baseline":
+            continue
+        if not baseline_cases or not cases:
+            paired_comparisons[config_name] = {
+                "skipped": True,
+                "reason": "baseline or candidate case-level results unavailable",
+            }
+            continue
+        paired_comparisons[config_name] = {
+            metric_name: compare_configs_paired(baseline_cases, cases, metric_name)
+            for metric_name in PAIRED_COMPARISON_FIELDS
+        }
+
+    return {
+        **artifact_metadata(),
+        "statistics_artifact": "ablation_statistics_appendix",
+        "enabled": True,
+        "bootstrap_confidence_intervals": bootstrap_intervals,
+        "paired_comparisons": paired_comparisons,
+        "family_groups": {
+            config_name: group_metrics_by_family(cases)
+            for config_name, cases in case_results_by_config.items()
+            if cases
+        },
+        "module_groups": {
+            config_name: group_metrics_by_primary_module(cases)
+            for config_name, cases in case_results_by_config.items()
+            if cases
+        },
+    }
+
+
+def export_ablation_statistics_appendix(
+    statistics: dict[str, object],
+    output_dir: str | Path = "data/eval_outputs",
+    base_name: str = "ablation_summary_report_statistics",
+) -> Path:
+    """Export optional ablation statistics appendix without changing main report files."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{base_name}.json"
+    path.write_text(json.dumps(statistics, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 def build_and_export_ablation_report(
     summary_paths: dict[str, str | Path] | None = None,
     output_dir: str | Path = "data/eval_outputs",
     base_name: str = "ablation_summary_report",
+    include_statistics: bool = False,
 ) -> dict[str, object]:
     """Load default ablation summaries and export a unified report."""
     rows = load_ablation_summaries(summary_paths=summary_paths)
     exported = export_ablation_report(rows, output_dir=output_dir, base_name=base_name)
-    return {"artifact_metadata": artifact_metadata(), "rows": rows, "exported_paths": exported}
+    payload: dict[str, object] = {"artifact_metadata": artifact_metadata(), "rows": rows, "exported_paths": exported}
+    if include_statistics:
+        statistics = build_ablation_statistics_appendix(summary_paths=summary_paths)
+        stats_path = export_ablation_statistics_appendix(
+            statistics,
+            output_dir=output_dir,
+            base_name=f"{base_name}_statistics",
+        )
+        exported["statistics"] = stats_path
+        payload["statistics"] = statistics
+    return payload
 
 
 def main() -> None:

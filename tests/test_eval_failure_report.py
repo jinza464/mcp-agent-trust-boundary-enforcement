@@ -120,6 +120,7 @@ def test_build_failure_report_categories_and_required_fields() -> None:
         assert first_mismatch.sink_action
         assert first_mismatch.primary_failure_reason
         assert first_mismatch.likely_responsible_module
+        assert first_mismatch.similar_patterns is None
         assert 0.0 <= first_mismatch.module_attribution_confidence <= 1.0
         assert first_mismatch.attribution_evidence
 
@@ -128,6 +129,64 @@ def test_build_failure_report_categories_and_required_fields() -> None:
         assert mapped.expected_failure_mode != "unknown"
         assert report.attribution_candidate_count >= 1
         assert "metadata_validator" in report.module_responsibility_distribution
+    finally:
+        if root.exists():
+            for item in root.glob("*"):
+                item.unlink()
+            root.rmdir()
+
+
+def test_build_failure_report_can_attach_optional_similar_patterns() -> None:
+    root = Path("data") / "test_outputs" / f"failure-report-similar-{uuid4().hex}"
+    try:
+        case_results_path = root / "eval_case_results.json"
+        summary_path = root / "eval_summary.json"
+        _write_json(
+            case_results_path,
+            [
+                {
+                    "case_id": "case-tool-shadowing",
+                    "attack_type": "tool shadowing",
+                    "is_attack": True,
+                    "is_benign": False,
+                    "involves_sink": False,
+                    "decision_action": "deny",
+                    "sink_action": None,
+                    "matched_expectation": False,
+                    "intervention_triggered": True,
+                    "completed_execution": False,
+                    "execution_degraded": True,
+                    "findings": ["Server origin relocation detected for same tool identity."],
+                }
+            ],
+        )
+        _write_json(
+            summary_path,
+            {
+                "match_rate": 0.0,
+                "attack_success_rate": 0.0,
+                "leak_rate": 0.0,
+                "false_positive_rate": 0.0,
+                "utility_loss": 0.0,
+            },
+        )
+
+        report = build_failure_report(
+            case_results_path=case_results_path,
+            summary_path=summary_path,
+            include_similar_cases=True,
+            similar_top_k=2,
+        )
+
+        summary = report.mismatched_cases[0]
+        assert summary.similar_patterns
+        first_hit = summary.similar_patterns[0]
+        assert first_hit.pattern_id
+        assert first_hit.pattern_type
+        assert first_hit.score > 0
+        assert first_hit.source_case_id or first_hit.pattern_id
+        assert first_hit.text_excerpt
+        assert summary.likely_responsible_module == "metadata_validator"
     finally:
         if root.exists():
             for item in root.glob("*"):

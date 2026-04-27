@@ -115,6 +115,7 @@ class EvaluationService:
         *,
         output_json: str | None = None,
         output_csv: str | None = None,
+        include_statistics: bool = False,
     ) -> dict[str, object]:
         try:
             output_dir, base_name = self._resolve_ablation_report_target(
@@ -127,6 +128,7 @@ class EvaluationService:
             payload = build_and_export_ablation_report(
                 output_dir=output_dir,
                 base_name=base_name,
+                include_statistics=include_statistics,
             )
             outputs = payload["exported_paths"]
         except Exception as exc:  # pragma: no cover

@@ -20,12 +20,14 @@ class ReportService:
         case_results_path: str | Path,
         summary_path: str | Path,
         output_dir: str | Path | None = None,
+        include_similar_cases: bool = False,
     ) -> dict[str, str]:
         try:
             payload = build_and_export_failure_report(
                 case_results_path=case_results_path,
                 summary_path=summary_path,
                 output_dir=output_dir,
+                include_similar_cases=include_similar_cases,
             )
         except Exception as exc:  # pragma: no cover
             raise ServiceError(

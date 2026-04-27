@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.models import DecisionAction
 from app.eval.attack_cases import default_attack_cases
+from app.eval.pattern_memory import PatternMemory
 from app.eval.runtime_semantics import (
     CASE_PACK_VERSION,
     RUNTIME_SEMANTICS_VERSION,
@@ -23,6 +24,18 @@ from app.eval.runtime_semantics import (
 
 DEFAULT_CASE_RESULTS_PATH = Path("data/eval_outputs/baseline/eval_case_results.json")
 DEFAULT_SUMMARY_PATH = Path("data/eval_outputs/baseline/eval_summary.json")
+
+
+class SimilarPatternSummary(BaseModel):
+    """Compact similar-pattern hit attached only when optional retrieval is enabled."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pattern_id: str
+    source_case_id: str | None = None
+    pattern_type: str
+    score: float
+    text_excerpt: str
 
 
 class FailureCaseSummary(BaseModel):
@@ -44,6 +57,7 @@ class FailureCaseSummary(BaseModel):
     secondary_responsible_modules: list[str] = Field(default_factory=list)
     attribution_evidence: list[str] = Field(default_factory=list)
     expected_failure_mode: str = "unknown"
+    similar_patterns: list[SimilarPatternSummary] | None = None
 
 
 class FailureAnalysisReport(BaseModel):
@@ -414,6 +428,46 @@ def _to_summary(
     )
 
 
+def _similar_pattern_query(
+    item: dict[str, object],
+    summary: FailureCaseSummary,
+) -> str:
+    parts = [
+        summary.attack_type,
+        summary.primary_failure_reason,
+        summary.likely_responsible_module,
+        summary.expected_failure_mode,
+    ]
+    for key in ("findings", "reasons"):
+        value = item.get(key)
+        if isinstance(value, list):
+            parts.extend(str(entry) for entry in value)
+    return " ".join(part for part in parts if part)
+
+
+def _find_similar_patterns(
+    *,
+    item: dict[str, object],
+    summary: FailureCaseSummary,
+    memory: PatternMemory,
+    top_k: int,
+) -> list[SimilarPatternSummary]:
+    query = _similar_pattern_query(item, summary)
+    if not query.strip():
+        return []
+    results = memory.search(query, top_k=top_k)
+    return [
+        SimilarPatternSummary(
+            pattern_id=result.record.pattern_id,
+            source_case_id=result.record.source_case_id,
+            pattern_type=result.record.pattern_type,
+            score=round(result.score, 6),
+            text_excerpt=result.record.text[:160],
+        )
+        for result in results
+    ]
+
+
 def _markdown_table(items: list[FailureCaseSummary]) -> str:
     if not items:
         return "_None_\n"
@@ -489,6 +543,8 @@ def build_failure_report(
     *,
     case_results_path: str | Path,
     summary_path: str | Path,
+    include_similar_cases: bool = False,
+    similar_top_k: int = 3,
 ) -> FailureAnalysisReport:
     """Build structured failure analysis report from case-level results and summary."""
     case_path = Path(case_results_path)
@@ -511,6 +567,7 @@ def build_failure_report(
 
     scored_cases: list[tuple[int, FailureCaseSummary]] = []
     analysis_candidates: dict[str, FailureCaseSummary] = {}
+    pattern_memory = PatternMemory.from_attack_cases(default_attack_cases()) if include_similar_cases else None
 
     for item in case_payload:
         if not isinstance(item, dict):
@@ -541,6 +598,17 @@ def build_failure_report(
             primary_failure_reason=reason,
             module_attribution=module_attribution,
         )
+        if pattern_memory is not None:
+            summary = summary.model_copy(
+                update={
+                    "similar_patterns": _find_similar_patterns(
+                        item=item,
+                        summary=summary,
+                        memory=pattern_memory,
+                        top_k=similar_top_k,
+                    )
+                }
+            )
 
         if mismatched:
             mismatched_cases.append(summary)
@@ -667,7 +735,7 @@ def export_failure_report(
     md_path = out_dir / f"{base_name}.md"
 
     json_path.write_text(
-        json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        json.dumps(report.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     md_path.write_text(
@@ -683,12 +751,19 @@ def build_and_export_failure_report(
     summary_path: str | Path = DEFAULT_SUMMARY_PATH,
     output_dir: str | Path | None = None,
     base_name: str = "failure_analysis_report",
+    include_similar_cases: bool = False,
+    similar_top_k: int = 3,
 ) -> dict[str, object]:
     """Build and export failure analysis report for a given evaluation output set."""
     case_path = Path(case_results_path)
     sum_path = Path(summary_path)
     out_dir = Path(output_dir) if output_dir is not None else case_path.parent
-    report = build_failure_report(case_results_path=case_path, summary_path=sum_path)
+    report = build_failure_report(
+        case_results_path=case_path,
+        summary_path=sum_path,
+        include_similar_cases=include_similar_cases,
+        similar_top_k=similar_top_k,
+    )
     exported = export_failure_report(
         report,
         case_results_path=case_path,

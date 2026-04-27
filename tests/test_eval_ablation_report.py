@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from app.eval.ablation_report import export_ablation_report, load_ablation_summaries
+from app.eval.ablation_report import build_and_export_ablation_report, export_ablation_report, load_ablation_summaries
 
 
 def _write_summary(path: Path) -> None:
@@ -209,3 +209,126 @@ def test_export_ablation_report_serializes_family_stats_for_csv() -> None:
             for item in root.glob("*"):
                 item.unlink()
             root.rmdir()
+
+
+def _case_result(
+    case_id: str,
+    *,
+    matched: bool,
+    is_attack: bool,
+    is_benign: bool,
+    involves_sink: bool = False,
+    intervention: bool = False,
+    completed: bool = True,
+    degraded: bool = False,
+    leak_possible: bool = False,
+    family: str = "metadata_drift_security",
+    module: str = "metadata_validator",
+) -> dict[str, object]:
+    return {
+        "case_id": case_id,
+        "matched_expectation": matched,
+        "is_attack": is_attack,
+        "is_benign": is_benign,
+        "involves_sink": involves_sink,
+        "intervention_triggered": intervention,
+        "completed_execution": completed,
+        "execution_degraded": degraded,
+        "leak_possible": leak_possible,
+        "case_family": family,
+        "primary_target_module": module,
+    }
+
+
+def test_build_and_export_ablation_report_default_omits_statistics(tmp_path: Path) -> None:
+    baseline_summary = tmp_path / "baseline" / "eval_summary.json"
+    candidate_summary = tmp_path / "no_trust_tagging" / "eval_summary.json"
+    _write_summary(baseline_summary)
+    _write_summary(candidate_summary)
+    _write_cases(
+        tmp_path / "baseline" / "eval_case_results.json",
+        [_case_result("case-a", matched=True, is_attack=True, is_benign=False)],
+    )
+    _write_cases(
+        tmp_path / "no_trust_tagging" / "eval_case_results.json",
+        [_case_result("case-a", matched=False, is_attack=True, is_benign=False)],
+    )
+
+    payload = build_and_export_ablation_report(
+        summary_paths={"baseline": baseline_summary, "no_trust_tagging": candidate_summary},
+        output_dir=tmp_path / "out",
+    )
+
+    assert "statistics" not in payload
+    assert "statistics" not in payload["exported_paths"]
+    assert len(payload["rows"]) == 2
+    assert payload["exported_paths"]["json"].exists()
+    assert payload["exported_paths"]["csv"].exists()
+
+
+def test_build_and_export_ablation_report_can_emit_statistics_appendix(tmp_path: Path) -> None:
+    baseline_summary = tmp_path / "baseline" / "eval_summary.json"
+    candidate_summary = tmp_path / "no_sink_guard" / "eval_summary.json"
+    _write_summary(baseline_summary)
+    _write_summary(candidate_summary)
+    _write_cases(
+        tmp_path / "baseline" / "eval_case_results.json",
+        [
+            _case_result(
+                "case-a",
+                matched=True,
+                is_attack=True,
+                is_benign=False,
+                involves_sink=True,
+                leak_possible=False,
+            ),
+            _case_result(
+                "case-b",
+                matched=True,
+                is_attack=False,
+                is_benign=True,
+                intervention=False,
+                completed=True,
+                degraded=False,
+                family="gray_zone_benign",
+            ),
+        ],
+    )
+    _write_cases(
+        tmp_path / "no_sink_guard" / "eval_case_results.json",
+        [
+            _case_result(
+                "case-a",
+                matched=False,
+                is_attack=True,
+                is_benign=False,
+                involves_sink=True,
+                leak_possible=True,
+            ),
+            _case_result(
+                "case-b",
+                matched=True,
+                is_attack=False,
+                is_benign=True,
+                intervention=True,
+                completed=False,
+                degraded=True,
+                family="gray_zone_benign",
+            ),
+        ],
+    )
+
+    payload = build_and_export_ablation_report(
+        summary_paths={"baseline": baseline_summary, "no_sink_guard": candidate_summary},
+        output_dir=tmp_path / "out",
+        include_statistics=True,
+    )
+
+    statistics = payload["statistics"]
+    assert "bootstrap_confidence_intervals" in statistics
+    assert "paired_comparisons" in statistics
+    assert "family_groups" in statistics
+    assert "module_groups" in statistics
+    assert payload["exported_paths"]["statistics"].exists()
+    assert len(payload["rows"]) == 2
+    assert "match_rate" in payload["rows"][0]
