@@ -13,7 +13,7 @@ from app.decision.decision_engine import DecisionContext, EngineDecisionResult, 
 from app.mcp.protocol_models import McpRequestEnvelope, RequestLineage
 from app.policy.capability_policy import CapabilityClassificationResult, classify_capabilities
 from app.registry.tool_registry import ToolRegistry
-from app.sink.sink_guard import SinkInspectionResult, inspect_sink
+from app.sink.sink_guard import SinkDecisionContext, SinkInspectionResult, inspect_sink_with_context
 from app.tagging.trust_tagger import tag_source
 from app.validation.metadata_validator import MetadataValidationResult, validate_metadata
 
@@ -589,12 +589,28 @@ class MCPAgentClient:
             merged_sink_meta = dict(context.sink_metadata)
             if inferred_sink_type and "sink_type" not in merged_sink_meta:
                 merged_sink_meta["sink_type"] = inferred_sink_type
+            if "sink_type" not in merged_sink_meta:
+                merged_sink_meta["sink_type"] = "local_output"
             add_trace("sink_inspection", "sink_inspection_started", sink_type=str(merged_sink_meta.get("sink_type", "")))
-            sink_result = inspect_sink(
-                planned_action=merged_sink_meta.get("sink_type", "local_output"),
+            sink_context = SinkDecisionContext(
+                request_lineage=policy_bundle.request_lineage,
+                upstream_trust_label=policy_bundle.source_trust_label,
+                decision_action=policy_bundle.decision_result.action,
+                capability_result=policy_bundle.capability_result,
                 payload=context.sink_payload if context.sink_payload is not None else {"query": context.user_query},
-                metadata=merged_sink_meta,
+                sink_metadata=merged_sink_meta,
             )
+            add_trace(
+                "sink_inspection",
+                "sink_context_constructed",
+                has_request_lineage=sink_context.request_lineage is not None,
+                upstream_trust_label=policy_bundle.source_trust_label.value,
+                decision_action=policy_bundle.decision_result.action.value,
+                capability_count=len(policy_bundle.capability_result.detected_capabilities),
+                feature=context.envelope.feature,
+                request_id=policy_bundle.request_lineage.request_id,
+            )
+            sink_result = inspect_sink_with_context(sink_context)
             add_trace(
                 "sink_inspection",
                 "sink_inspection_completed",

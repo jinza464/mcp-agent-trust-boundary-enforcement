@@ -150,6 +150,37 @@ def test_confirmation_required_but_completed() -> None:
     assert result.simulated_tool_output is not None
 
 
+def test_handle_query_tools_sink_uses_lineage_aware_context_trace() -> None:
+    telemetry_tool = _tool(
+        tool_id="tool.telemetry",
+        name="telemetry_sender",
+        description="Send build telemetry events.",
+        capabilities={CapabilityType.READ},
+    )
+    client = MCPAgentClient([telemetry_tool])
+
+    result = client.handle_query(
+        "send telemetry update",
+        preferred_tool_name="telemetry_sender",
+        sink_payload={"event": "build_completed", "client_id": "a1"},
+        sink_metadata={"sink_type": "network_send", "endpoint": "https://hooks.example.com/callback"},
+        user_authorized=True,
+    )
+
+    sink_context_records = [
+        record
+        for record in result.execution_trace_records
+        if record.stage == "sink_inspection" and record.event == "sink_context_constructed"
+    ]
+    assert result.final_status == "executed"
+    assert sink_context_records
+    details = sink_context_records[0].details
+    assert details["has_request_lineage"] is True
+    assert details["feature"] == "tools"
+    assert details["decision_action"] == "allow"
+    assert isinstance(details["capability_count"], int)
+
+
 def test_final_status_values_are_centralized() -> None:
     required = {
         "executed",
@@ -193,6 +224,41 @@ def test_handle_mcp_request_tools_feature_executes() -> None:
     )
 
 
+def test_handle_mcp_request_passes_request_lineage_to_sink_context() -> None:
+    telemetry_tool = _tool(
+        tool_id="tool.telemetry",
+        name="telemetry_sender",
+        description="Send build telemetry events.",
+        capabilities={CapabilityType.READ},
+    )
+    client = MCPAgentClient([telemetry_tool])
+
+    envelope = McpRequestEnvelope(
+        request_id="req-sink-context-1",
+        session_id="sess-sink-context-1",
+        feature="tools",
+        source_role="client",
+        payload={
+            "user_query": "send telemetry update",
+            "preferred_tool_name": "telemetry_sender",
+            "sink_payload": {"event": "build_completed", "client_id": "a1"},
+            "sink_metadata": {"sink_type": "network_send", "endpoint": "https://hooks.example.com/callback"},
+            "user_authorized": True,
+        },
+    )
+    result = client.handle_mcp_request(envelope)
+
+    sink_context_record = next(
+        record
+        for record in result.execution_trace_records
+        if record.stage == "sink_inspection" and record.event == "sink_context_constructed"
+    )
+    assert result.final_status == "executed"
+    assert sink_context_record.details["request_id"] == "req-sink-context-1"
+    assert sink_context_record.details["has_request_lineage"] is True
+    assert sink_context_record.details["feature"] == "tools"
+
+
 def test_handle_mcp_request_non_tools_feature_skips_mock_execution() -> None:
     safe_tool = _tool(
         tool_id="tool.docs.search",
@@ -220,5 +286,42 @@ def test_handle_mcp_request_non_tools_feature_skips_mock_execution() -> None:
     assert result.simulated_tool_output is None
     assert not any(
         record.stage == "mock_execution" and record.event == "execution_completed"
+        for record in result.execution_trace_records
+    )
+
+
+def test_handle_mcp_request_non_tools_feature_does_not_construct_sink_context() -> None:
+    safe_tool = _tool(
+        tool_id="tool.docs.search",
+        name="docs_search",
+        description="Search public documentation.",
+        capabilities={CapabilityType.READ},
+    )
+    client = MCPAgentClient([safe_tool])
+
+    envelope = McpRequestEnvelope(
+        request_id="req-sampling-1",
+        session_id="sess-sampling-1",
+        feature="sampling",
+        source_role="client",
+        payload={
+            "user_query": "sample a model response",
+            "preferred_tool_name": "docs_search",
+            "sink_payload": {"event": "should_not_sink"},
+            "sink_metadata": {"sink_type": "network_send", "endpoint": "https://hooks.example.com/callback"},
+        },
+    )
+    result = client.handle_mcp_request(envelope)
+
+    assert result.final_status == "not_executed_feature_scope"
+    assert result.final_execution_outcome.sink_gate_status == "not_applicable"
+    assert not any(
+        record.stage == "sink_inspection" and record.event == "sink_context_constructed"
+        for record in result.execution_trace_records
+    )
+    assert any(
+        record.stage == "sink_inspection"
+        and record.event == "sink_inspection_skipped"
+        and record.details.get("sink_semantics_supported") is False
         for record in result.execution_trace_records
     )
