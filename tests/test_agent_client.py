@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.core.models import CapabilityType, DecisionAction, ToolMetadata
 from app.mcp.agent_client import FINAL_STATUS_VALUES, MCPAgentClient
-from app.mcp.protocol_models import McpRequestEnvelope
+from app.mcp.protocol_models import McpFeatureScope, McpRequestEnvelope
 
 
 def _tool(
@@ -325,3 +325,86 @@ def test_handle_mcp_request_non_tools_feature_does_not_construct_sink_context() 
         and record.details.get("sink_semantics_supported") is False
         for record in result.execution_trace_records
     )
+
+
+def _run_non_tools_feature_smoke(feature: McpFeatureScope, request_id: str):
+    safe_tool = _tool(
+        tool_id="tool.docs.search",
+        name="docs_search",
+        description="Search public documentation.",
+        capabilities={CapabilityType.READ},
+    )
+    client = MCPAgentClient([safe_tool])
+    envelope = McpRequestEnvelope(
+        request_id=request_id,
+        session_id=f"sess-{feature}-smoke",
+        feature=feature,
+        source_role="server",
+        server_origin="https://server-a.mcp.local",
+        payload={
+            "user_query": f"{feature} boundary smoke",
+            "preferred_tool_name": "docs_search",
+            "sink_payload": {"event": f"{feature}_should_not_enter_sink"},
+            "sink_metadata": {"sink_type": "network_send", "endpoint": "https://external.example/upload"},
+        },
+    )
+    return client.handle_mcp_request(envelope)
+
+
+def _assert_non_tools_feature_guard(result, *, feature: str, request_id: str) -> None:
+    assert result.final_status == "not_executed_feature_scope"
+    assert result.final_execution_outcome.executed is False
+    assert result.final_execution_outcome.completed_execution is False
+    assert result.final_execution_outcome.sink_gate_status == "not_applicable"
+    assert result.execution_started is False
+    assert result.execution_completed is False
+    assert result.entered_execution_stage is False
+    assert result.completed_execution is False
+    assert result.simulated_tool_output is None
+    assert any(
+        record.details.get("request_id") == request_id
+        and record.details.get("feature") == feature
+        and record.details.get("source_role") == "server"
+        for record in result.execution_trace_records
+    )
+    assert any(
+        record.stage == "sink_inspection"
+        and record.event == "sink_inspection_skipped"
+        and record.details.get("feature") == feature
+        and record.details.get("recognized_feature") is True
+        and record.details.get("sink_semantics_supported") is False
+        for record in result.execution_trace_records
+    )
+    assert any(
+        record.stage == "mock_execution"
+        and record.event == "execution_not_started"
+        and record.details.get("blocked_by") == "feature_scope"
+        and record.details.get("feature") == feature
+        for record in result.execution_trace_records
+    )
+    assert not any(
+        record.stage == "mock_execution" and record.event in {"execution_started", "execution_completed"}
+        for record in result.execution_trace_records
+    )
+    assert not any(
+        record.stage == "sink_inspection" and record.event == "sink_context_constructed"
+        for record in result.execution_trace_records
+    )
+
+
+def test_sampling_feature_is_recognized_but_not_executed() -> None:
+    result = _run_non_tools_feature_smoke("sampling", "req-sampling-smoke-1")
+
+    _assert_non_tools_feature_guard(result, feature="sampling", request_id="req-sampling-smoke-1")
+
+
+def test_roots_feature_is_recognized_but_not_executed() -> None:
+    result = _run_non_tools_feature_smoke("roots", "req-roots-smoke-1")
+
+    _assert_non_tools_feature_guard(result, feature="roots", request_id="req-roots-smoke-1")
+
+
+def test_elicitation_feature_is_recognized_but_not_executed() -> None:
+    result = _run_non_tools_feature_smoke("elicitation", "req-elicitation-smoke-1")
+
+    _assert_non_tools_feature_guard(result, feature="elicitation", request_id="req-elicitation-smoke-1")

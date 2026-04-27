@@ -88,6 +88,11 @@ def test_sampling_context_links_sampling_to_root_request() -> None:
     assert context.model_hint == "test-model"
     assert context.allowed_tools == ["docs_search"]
     assert context.user_approved is False
+    dumped = context.model_dump(mode="json")
+    assert dumped["request_id"] == "req-child"
+    assert dumped["root_user_request_id"] == "req-root"
+    assert dumped["allowed_tools"] == ["docs_search"]
+    json.dumps(dumped)
 
 
 def test_roots_exposure_context_expresses_roots_and_approval() -> None:
@@ -103,6 +108,11 @@ def test_roots_exposure_context_expresses_roots_and_approval() -> None:
     assert context.exposed_roots == ["/workspace/project"]
     assert context.user_approved is True
     assert context.server_origin == "https://server.example"
+    dumped = context.model_dump(mode="json")
+    assert dumped["exposed_roots"] == ["/workspace/project"]
+    assert dumped["user_approved"] is True
+    assert dumped["server_origin"] == "https://server.example"
+    json.dumps(dumped)
 
 
 def test_elicitation_context_expresses_fields_and_approval() -> None:
@@ -119,6 +129,11 @@ def test_elicitation_context_expresses_fields_and_approval() -> None:
     assert context.requested_fields == ["email"]
     assert context.user_approved is True
     assert context.server_origin == "https://server.example"
+    dumped = context.model_dump(mode="json")
+    assert dumped["elicitation_prompt"] == "Please provide email."
+    assert dumped["requested_fields"] == ["email"]
+    assert dumped["user_approved"] is True
+    json.dumps(dumped)
 
 
 def test_protocol_models_forbid_extra_fields() -> None:
